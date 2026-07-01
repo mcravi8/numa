@@ -32,9 +32,15 @@ ANTHROPIC_CLIENT = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 # --- Finnhub — one shared client, or None when no key is configured ------
 # (news and peers use this instead of rebuilding a client on every call).
+# Pin an explicit 10-second timeout: news and peers are fetchers, and
+# module-pattern.md's "fetcher" rule wants their external calls bounded —
+# so we assert 10s here rather than silently inheriting the finnhub
+# library's default. (company_news / news_sentiment / company_peers take no
+# per-call timeout kwarg, so the shared client is the one place to set it.)
 if FINNHUB_API_KEY:
     import finnhub
     FINNHUB_CLIENT = finnhub.Client(api_key=FINNHUB_API_KEY)
+    FINNHUB_CLIENT.DEFAULT_TIMEOUT = 10
 else:
     FINNHUB_CLIENT = None
 
