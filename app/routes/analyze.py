@@ -4,8 +4,30 @@
 # The two per-ticker analysis endpoints. Both fetch the base
 # yf.Ticker(...) / .info once and dispatch the data modules
 # sequentially, one at a time (see docs/module-pattern.md).
+#
+# Both endpoints are driven by ONE ordered registry, MODULE_REGISTRY, so a
+# future module is registered in exactly one place and flows to both endpoints
+# automatically. Each entry is a ModuleSpec(key, label, premium, fetch):
+#
+#   key      the result slot / SSE "module" name (e.g. "options_flow")
+#   label    the UI progress-row label used by the stream (e.g. "Options Chain")
+#   premium  True for the demo premium modules (only run when mode == "premium")
+#   fetch    a signature adapter: given the per-request Ctx, call the underlying
+#            get_* module with whatever arguments it happens to take (the nine
+#            modules have six different call signatures — see module-pattern.md).
+#
+# The two endpoints consume the registry differently, and that difference is
+# deliberate and client-observable, so it is preserved exactly:
+#
+#   * analyze() emits its JSON keys in REGISTRY order — company … analyst_ratings,
+#     then the premium keys — matching the original response's key order.
+#   * analyze_stream() emits SSE events in LABEL-GROUPED order: modules sharing a
+#     label stream under one progress row (first-appearance order). This is what
+#     moves analyst_ratings ("Financials") up next to financials in the stream
+#     while it stays last in analyze()'s JSON. See _group_by_label().
 
 import json
+from collections import namedtuple
 from datetime import datetime
 
 import yfinance as yf
@@ -30,31 +52,68 @@ router = APIRouter()
 
 
 # ============================================================
+# === MODULE REGISTRY (single source of truth for both endpoints) ===
+# ============================================================
+
+# Per-request context handed to every module's signature adapter. current_price
+# is computed per endpoint (the two endpoints derive it differently — see below)
+# and only consumed by the premium demo modules.
+Ctx = namedtuple("Ctx", ["stock", "info", "ticker", "mode", "current_price"])
+
+# key, label, premium flag, and a signature adapter over Ctx.
+ModuleSpec = namedtuple("ModuleSpec", ["key", "label", "premium", "fetch"])
+
+# Ordered exactly like the original analyze() response's module keys. A new
+# module is added here once, at the end, and appears in both endpoints.
+MODULE_REGISTRY = [
+    ModuleSpec("company",              "Quote & Profile", False, lambda c: get_company(c.info)),
+    ModuleSpec("quote",                "Quote & Profile", False, lambda c: get_quote(c.info, c.mode)),
+    ModuleSpec("financials",           "Financials",      False, lambda c: get_financials(c.stock, c.info)),
+    ModuleSpec("technicals",           "Technicals",      False, lambda c: get_technicals(c.stock)),
+    ModuleSpec("options_flow",         "Options Chain",   False, lambda c: get_options_flow(c.stock, c.info, c.mode)),
+    ModuleSpec("insider_activity",     "Insider Filings", False, lambda c: get_insider_activity(c.ticker)),
+    ModuleSpec("news_sentiment",       "News",            False, lambda c: get_news_sentiment(c.ticker)),
+    ModuleSpec("peers",                "Peer Comparison", False, lambda c: get_peers(c.ticker, c.info)),
+    ModuleSpec("earnings",             "Earnings",        False, lambda c: get_earnings(c.stock, c.info)),
+    ModuleSpec("analyst_ratings",      "Financials",      False, lambda c: get_analyst_ratings(c.stock, c.info)),
+    ModuleSpec("dark_pool",            "Dark Pool",       True,  lambda c: get_dark_pool_demo(c.ticker, c.current_price)),
+    ModuleSpec("gamma_exposure",       "Gamma Exposure",  True,  lambda c: get_gex_demo(c.ticker, c.current_price)),
+    ModuleSpec("congressional_trades", "Congress",        True,  lambda c: get_congressional_trades(c.ticker)),
+]
+
+
+def _group_by_label(specs):
+    """Reorder specs so entries sharing a UI label stream consecutively, under a
+    single progress row, in first-appearance order of the label. This is what
+    the streaming endpoint uses so analyst_ratings (label "Financials") streams
+    next to financials, exactly as the original hand-written STREAM_MODULES did,
+    while analyze()'s JSON keeps registry order."""
+    groups, index = [], {}
+    for s in specs:
+        if s.label in index:
+            groups[index[s.label]].append(s)
+        else:
+            index[s.label] = len(groups)
+            groups.append([s])
+    return [s for group in groups for s in group]
+
+
+# ============================================================
 # === MAIN ANALYZE ENDPOINT ===
 # ============================================================
 
 @router.get("/analyze/{ticker}")
 def analyze(ticker: str, mode: str = "free"):
     ticker = ticker.upper().strip()
-    result = {
-        "ticker": ticker,
-        "mode": mode,
-        "timestamp": datetime.utcnow().isoformat(),
-        "company": None,
-        "quote": None,
-        "financials": None,
-        "technicals": None,
-        "options_flow": None,
-        "insider_activity": None,
-        "news_sentiment": None,
-        "peers": None,
-        "earnings": None,
-        "analyst_ratings": None,
-        "dark_pool": None,
-        "gamma_exposure": None,
-        "congressional_trades": None,
-        "error": None,
-    }
+
+    # Fixed key order: metadata, then every module key in registry order, then
+    # error — matching the original response exactly (premium keys stay None in
+    # free mode). Pre-inserting the keys makes the JSON order independent of
+    # which modules actually run.
+    result = {"ticker": ticker, "mode": mode, "timestamp": datetime.utcnow().isoformat()}
+    for spec in MODULE_REGISTRY:
+        result[spec.key] = None
+    result["error"] = None
 
     try:
         stock = yf.Ticker(ticker)
@@ -63,24 +122,13 @@ def analyze(ticker: str, mode: str = "free"):
             result["error"] = f"Ticker '{ticker}' not found or no data available."
             return result
 
-        # Free modules
-        result["company"] = get_company(info)
-        result["quote"] = get_quote(info, mode)
-        result["financials"] = get_financials(stock, info)
-        result["technicals"] = get_technicals(stock)
-        result["options_flow"] = get_options_flow(stock, info, mode)
-        result["insider_activity"] = get_insider_activity(ticker)
-        result["news_sentiment"] = get_news_sentiment(ticker)
-        result["peers"] = get_peers(ticker, info)
-        result["earnings"] = get_earnings(stock, info)
-        result["analyst_ratings"] = get_analyst_ratings(stock, info)
+        ctx = Ctx(stock=stock, info=info, ticker=ticker, mode=mode,
+                  current_price=info.get("currentPrice", 100.0))
 
-        # Premium modules (demo data when mode=premium)
-        if mode == "premium":
-            current_price = info.get("currentPrice", 100.0)
-            result["dark_pool"] = get_dark_pool_demo(ticker, current_price)
-            result["gamma_exposure"] = get_gex_demo(ticker, current_price)
-            result["congressional_trades"] = get_congressional_trades(ticker)
+        for spec in MODULE_REGISTRY:
+            if spec.premium and mode != "premium":
+                continue
+            result[spec.key] = spec.fetch(ctx)
 
     except Exception as e:
         result["error"] = str(e)
@@ -96,22 +144,6 @@ def analyze(ticker: str, mode: str = "free"):
 #   data: {"module": "options_flow", "status": "fetching"}
 #   data: {"module": "options_flow", "status": "done", "data": {...}}
 # Ends with a "complete" event followed by a [DONE] sentinel.
-
-# Ordered (module_key, friendly_label) pairs streamed for every request.
-# `label` groups several backend modules under one progress row on the UI.
-STREAM_MODULES = [
-    ("company", "Quote & Profile"),
-    ("quote", "Quote & Profile"),
-    ("financials", "Financials"),
-    ("analyst_ratings", "Financials"),
-    ("technicals", "Technicals"),
-    ("options_flow", "Options Chain"),
-    ("insider_activity", "Insider Filings"),
-    ("news_sentiment", "News"),
-    ("peers", "Peer Comparison"),
-    ("earnings", "Earnings"),
-]
-
 
 @router.get("/analyze/stream/{ticker}")
 def analyze_stream(ticker: str, mode: str = "free"):
@@ -133,41 +165,24 @@ def analyze_stream(ticker: str, mode: str = "free"):
                 return
 
             current_price = info.get("currentPrice") or info.get("regularMarketPrice") or 100.0
+            ctx = Ctx(stock=stock, info=info, ticker=ticker, mode=mode,
+                      current_price=current_price)
 
-            def run(key):
-                if key == "company":          return get_company(info)
-                if key == "quote":            return get_quote(info, mode)
-                if key == "financials":       return get_financials(stock, info)
-                if key == "analyst_ratings":  return get_analyst_ratings(stock, info)
-                if key == "technicals":       return get_technicals(stock)
-                if key == "options_flow":     return get_options_flow(stock, info, mode)
-                if key == "insider_activity": return get_insider_activity(ticker)
-                if key == "news_sentiment":   return get_news_sentiment(ticker)
-                if key == "peers":            return get_peers(ticker, info)
-                if key == "earnings":         return get_earnings(stock, info)
-                return None
+            # Stream free modules first (label-grouped), then premium modules
+            # (only in premium mode). Grouping by label reproduces the original
+            # STREAM_MODULES ordering, where analyst_ratings rides under the
+            # "Financials" row right after financials.
+            free = _group_by_label([s for s in MODULE_REGISTRY if not s.premium])
+            premium = _group_by_label([s for s in MODULE_REGISTRY if s.premium])
+            stream_specs = free + (premium if mode == "premium" else [])
 
-            for key, label in STREAM_MODULES:
-                yield sse({"module": key, "label": label, "status": "fetching"})
+            for spec in stream_specs:
+                yield sse({"module": spec.key, "label": spec.label, "status": "fetching"})
                 try:
-                    data = run(key)
+                    data = spec.fetch(ctx)
                 except Exception as e:
                     data = {"error": str(e)}
-                yield sse({"module": key, "label": label, "status": "done", "data": data})
-
-            if mode == "premium":
-                premium = [
-                    ("dark_pool", "Dark Pool", lambda: get_dark_pool_demo(ticker, current_price)),
-                    ("gamma_exposure", "Gamma Exposure", lambda: get_gex_demo(ticker, current_price)),
-                    ("congressional_trades", "Congress", lambda: get_congressional_trades(ticker)),
-                ]
-                for key, label, fn in premium:
-                    yield sse({"module": key, "label": label, "status": "fetching"})
-                    try:
-                        data = fn()
-                    except Exception as e:
-                        data = {"error": str(e)}
-                    yield sse({"module": key, "label": label, "status": "done", "data": data})
+                yield sse({"module": spec.key, "label": spec.label, "status": "done", "data": data})
 
             yield sse({"status": "complete", "timestamp": datetime.utcnow().isoformat()})
             yield "data: [DONE]\n\n"
