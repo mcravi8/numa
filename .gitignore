@@ -9,6 +9,7 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+.pytest_cache/
 
 # Generated icons (rebuild with generate_icons.py)
 icon-192.png

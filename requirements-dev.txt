@@ -1,0 +1,6 @@
+# Development / test dependencies.
+#   pip install -r requirements-dev.txt   (pulls in requirements.txt too)
+# Run under the same python3.11 runtime the app uses (see CLAUDE.md).
+-r requirements.txt
+pytest==9.1.1
+httpx==0.26.0
