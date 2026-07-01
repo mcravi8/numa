@@ -1,3 +1,7 @@
+"""Macro layer: rates, labor, inflation, growth, market conditions, market-implied
+Fed probabilities, and an events calendar. Data from FRED (free) and yfinance
+(indices only), cached for one hour.
+"""
 # ============================================================
 # === MACRO LAYER ===
 # ============================================================
@@ -168,7 +172,7 @@ def get_fed_probabilities() -> dict:
 
 
 @router.get("/macro")
-def get_macro():
+def get_macro() -> dict:
     """
     Pull all macro indicators. Cached for 1-hour TTL (20+ FRED requests).
     All data from FRED (free) and yfinance (indices only).

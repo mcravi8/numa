@@ -1,12 +1,19 @@
+"""Peers module: relative valuation vs sector-mate tickers.
+
+Fetches its peer list (Finnhub first, then a hard-coded sector table) and each
+peer's ``info``, then reshapes alongside the caller's ``info``
+(see docs/module-pattern.md).
+"""
 # ============================================================
 # === MODULE 8: PEERS ===
 # ============================================================
 
 import math
+
 import pandas as pd
 import yfinance as yf
 
-from app.config import FINNHUB_CLIENT
+from app.config import FINNHUB_CLIENT, logger
 
 
 def get_peers(ticker: str, info: dict) -> dict:
@@ -17,8 +24,8 @@ def get_peers(ticker: str, info: dict) -> dict:
             try:
                 peer_tickers = FINNHUB_CLIENT.company_peers(ticker) or []
                 peer_tickers = [p for p in peer_tickers if p != ticker][:5]
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("finnhub company_peers failed for %s", ticker, exc_info=exc)
 
         if not peer_tickers:
             sector_map = {
@@ -51,8 +58,8 @@ def get_peers(ticker: str, info: dict) -> dict:
                         vals = [v for v in rev_row.values if not pd.isna(v)]
                         if len(vals) >= 2 and vals[1]:
                             prev_rev = vals[1]
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("peer %s prior-revenue lookup failed", t, exc_info=exc)
                 rev_growth = round((rev - prev_rev) / abs(prev_rev) * 100, 1) if rev and prev_rev and prev_rev != 0 else None
                 return {
                     "ticker": t,

@@ -1,3 +1,6 @@
+"""Application package. ``create_app()`` assembles the FastAPI instance: CORS,
+the seven route routers, and the catch-all /static mount.
+"""
 # ============================================================
 # === APP FACTORY ===
 # ============================================================
@@ -15,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.config import STATIC_DIR
-from app.routes import frontend, analyze, quotes, notes, ai, macro, search
+from app.routes import ai, analyze, frontend, macro, notes, quotes, search
 
 
 def create_app() -> FastAPI:

@@ -1,3 +1,8 @@
+"""Quote module: price, valuation, and extended-hours fields from ``info``.
+
+Transformer over the caller's pre-fetched ``info`` bag; adds demo bid/ask/VWAP
+fields in premium mode (see docs/module-pattern.md).
+"""
 # ============================================================
 # === MODULE 2: QUOTE ===
 # ============================================================

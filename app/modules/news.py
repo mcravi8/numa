@@ -1,14 +1,22 @@
+"""News & sentiment module: recent headlines plus a sentiment read.
+
+Fetcher — pulls news from Finnhub (falling back to yfinance) and, on the free
+tier, scores headlines with Claude via ``_ai_news_sentiment``
+(see docs/module-pattern.md).
+"""
 # ============================================================
 # === MODULE 7: NEWS & SENTIMENT ===
 # ============================================================
 
 import json
-import yfinance as yf
 from datetime import datetime, timedelta
+
+import yfinance as yf
 
 from app.config import (
     ANTHROPIC_CLIENT,
     FINNHUB_CLIENT,
+    logger,
 )
 
 
@@ -108,8 +116,8 @@ def get_news_sentiment(ticker: str) -> dict:
                         "url": a.get("url", ""),
                         "sentiment": None,
                     })
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("finnhub company_news failed for %s", ticker, exc_info=exc)
             try:
                 s = FINNHUB_CLIENT.news_sentiment(ticker)
                 buzz = s.get("buzz", {}).get("buzz")
@@ -127,8 +135,8 @@ def get_news_sentiment(ticker: str) -> dict:
                         "Very Bearish" if score < -0.3 else "Neutral"
                     ),
                 }
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("finnhub news_sentiment failed for %s", ticker, exc_info=exc)
 
         # Fallback: yfinance news
         if not articles:

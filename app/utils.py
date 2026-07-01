@@ -1,3 +1,6 @@
+"""Shared JSON-safety helpers: coerce numpy scalars and NaN/Inf to JSON-native
+types so the strict (allow_nan=False) responses never 500.
+"""
 # ============================================================
 # === UTILS — shared JSON-safety helpers ===
 # ============================================================

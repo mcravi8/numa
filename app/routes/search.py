@@ -1,3 +1,7 @@
+"""Symbol search (ticker autocomplete) via Yahoo's public search endpoint, plus
+the /health probe. Search degrades to an empty list (never raises) so the
+frontend typeahead can fall back to analyzing whatever was typed.
+"""
 # ============================================================
 # === SYMBOL SEARCH (ticker autocomplete) + HEALTH ===
 # ============================================================
@@ -21,7 +25,7 @@ router = APIRouter()
 # ============================================================
 
 @router.get("/health")
-def health():
+def health() -> dict:
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
 
 
@@ -48,7 +52,7 @@ def _alnum(s):
 
 
 @router.get("/search")
-def symbol_search(q: str = "", limit: int = 8):
+def symbol_search(q: str = "", limit: int = 8) -> dict:
     """Ticker suggestions for a company-name or partial-symbol query.
 
     Returns {query, results:[{symbol, name, type, exchange}]}, best match first.

@@ -1,3 +1,8 @@
+"""Config: environment, API keys, shared clients, paths, and the app logger.
+
+Single source of truth for everything read from the environment. Also builds the
+one shared "numa" stdlib logger used across the modules and routes.
+"""
 # ============================================================
 # === CONFIG — env, API keys, shared clients, constants ===
 # ============================================================
@@ -8,6 +13,7 @@
 # lives in exactly one place, and the shared clients (Anthropic, Finnhub) are
 # constructed a single time rather than rebuilt on every request.
 
+import logging
 import os
 import pathlib
 
@@ -15,6 +21,21 @@ import anthropic
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# --- Logger — one configured "numa" logger shared by modules and routes -----
+# Defaults to WARNING so a normal run stays quiet; set NUMA_LOG_LEVEL=DEBUG to
+# surface the previously-silent swallowed exceptions (fetch fallbacks, partial
+# parses). Its own handler + propagate=False keep it from doubling up on
+# uvicorn's root logging.
+logger = logging.getLogger("numa")
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s numa.%(module)s: %(message)s")
+    )
+    logger.addHandler(_handler)
+logger.setLevel(os.getenv("NUMA_LOG_LEVEL", "WARNING").upper())
+logger.propagate = False
 
 # --- API keys (each read once, here) ------------------------------------
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")

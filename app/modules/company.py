@@ -1,3 +1,7 @@
+"""Company profile module: name, sector, description, HQ, CEO from ``info``.
+
+Transformer over the caller's pre-fetched ``info`` bag (see docs/module-pattern.md).
+"""
 # ============================================================
 # === MODULE 1: COMPANY PROFILE ===
 # ============================================================

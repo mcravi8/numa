@@ -1,14 +1,22 @@
+"""Options-flow module: per-expiry volume/OI, unusual contracts, and max pain.
+
+Transformer over the caller's ``stock`` handle and ``info`` bag; adds a demo
+premium-flow block in premium mode (see docs/module-pattern.md).
+"""
 # ============================================================
 # === MODULE 5: OPTIONS FLOW ===
 # ============================================================
 
-import pandas as pd
 from datetime import datetime
 
+import pandas as pd
+import yfinance as yf
+
+from app.config import logger
 from app.modules.premium_demo import get_options_flow_premium_demo
 
 
-def get_options_flow(stock, info: dict, mode: str = "free") -> dict:
+def get_options_flow(stock: yf.Ticker, info: dict, mode: str = "free") -> dict:
     try:
         current_price = info.get("currentPrice", 100)
         expiries = stock.options[:4]
@@ -94,8 +102,8 @@ def get_options_flow(stock, info: dict, mode: str = "free") -> dict:
                 losses.append(call_loss + put_loss)
             if losses:
                 max_pain = strikes[losses.index(min(losses))]
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("max-pain calc failed", exc_info=exc)
 
         pcr = round(total_put_vol / total_call_vol, 2) if total_call_vol else None
         sentiment = "Very Bearish" if pcr and pcr > 2 else ("Bearish" if pcr and pcr > 1.2 else ("Very Bullish" if pcr and pcr < 0.5 else ("Bullish" if pcr and pcr < 0.8 else "Neutral")))

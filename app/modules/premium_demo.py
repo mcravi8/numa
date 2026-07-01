@@ -1,3 +1,6 @@
+"""Premium demo modules: deterministic fake options-flow, dark-pool, and GEX
+payloads returned in premium mode until the paid API keys are supplied.
+"""
 # ============================================================
 # === PREMIUM DEMO MODULES ===
 # ============================================================

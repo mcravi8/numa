@@ -1,3 +1,7 @@
+"""Analyze endpoints: the full-JSON /analyze/{ticker} and the streaming SSE
+/analyze/stream/{ticker}. Both are driven by one ordered MODULE_REGISTRY so a
+new data module is registered in exactly one place (see docs/module-pattern.md).
+"""
 # ============================================================
 # === ANALYZE ENDPOINTS (full JSON + streaming SSE) ===
 # ============================================================
@@ -34,19 +38,19 @@ import yfinance as yf
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
-from app.utils import _json_safe
 from app.modules.company import get_company
-from app.modules.quote import get_quote
+from app.modules.congress import get_congressional_trades
+from app.modules.earnings import get_earnings
 from app.modules.financials import get_financials
-from app.modules.technicals import get_technicals
-from app.modules.options import get_options_flow
 from app.modules.insider import get_insider_activity
 from app.modules.news import get_news_sentiment
+from app.modules.options import get_options_flow
 from app.modules.peers import get_peers
-from app.modules.earnings import get_earnings
-from app.modules.ratings import get_analyst_ratings
-from app.modules.congress import get_congressional_trades
 from app.modules.premium_demo import get_dark_pool_demo, get_gex_demo
+from app.modules.quote import get_quote
+from app.modules.ratings import get_analyst_ratings
+from app.modules.technicals import get_technicals
+from app.utils import _json_safe
 
 router = APIRouter()
 
@@ -103,7 +107,7 @@ def _group_by_label(specs):
 # ============================================================
 
 @router.get("/analyze/{ticker}")
-def analyze(ticker: str, mode: str = "free"):
+def analyze(ticker: str, mode: str = "free") -> dict:
     ticker = ticker.upper().strip()
 
     # Fixed key order: metadata, then every module key in registry order, then
@@ -146,7 +150,7 @@ def analyze(ticker: str, mode: str = "free"):
 # Ends with a "complete" event followed by a [DONE] sentinel.
 
 @router.get("/analyze/stream/{ticker}")
-def analyze_stream(ticker: str, mode: str = "free"):
+def analyze_stream(ticker: str, mode: str = "free") -> StreamingResponse:
     ticker = ticker.upper().strip()
 
     def sse(payload: dict) -> str:

@@ -1,3 +1,6 @@
+"""Frontend + PWA static serving: the SPA at /, plus manifest, service worker,
+and icons, all served from the static/ directory.
+"""
 # ============================================================
 # === FRONTEND + PWA STATIC SERVING ===
 # ============================================================
@@ -16,13 +19,13 @@ router = APIRouter()
 
 
 @router.get("/")
-def serve_frontend():
+def serve_frontend() -> FileResponse:
     """Serve the main HTML file."""
     return FileResponse(STATIC_DIR / "index.html")
 
 
 @router.get("/manifest.json")
-def serve_manifest():
+def serve_manifest() -> FileResponse:
     return FileResponse(
         STATIC_DIR / "manifest.json",
         media_type="application/manifest+json",
@@ -30,7 +33,7 @@ def serve_manifest():
 
 
 @router.get("/sw.js")
-def serve_sw():
+def serve_sw() -> FileResponse:
     return FileResponse(
         STATIC_DIR / "sw.js",
         media_type="application/javascript",
@@ -38,10 +41,10 @@ def serve_sw():
 
 
 @router.get("/icon-192.png")
-def serve_icon_192():
+def serve_icon_192() -> FileResponse:
     return FileResponse(STATIC_DIR / "icon-192.png")
 
 
 @router.get("/icon-512.png")
-def serve_icon_512():
+def serve_icon_512() -> FileResponse:
     return FileResponse(STATIC_DIR / "icon-512.png")

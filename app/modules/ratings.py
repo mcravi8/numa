@@ -1,9 +1,18 @@
+"""Analyst-ratings module: consensus, price targets, recent rating changes.
+
+Transformer over the caller's ``stock`` handle and ``info`` bag
+(see docs/module-pattern.md).
+"""
 # ============================================================
 # === MODULE 10: ANALYST RATINGS ===
 # ============================================================
 
+import yfinance as yf
 
-def get_analyst_ratings(stock, info: dict) -> dict:
+from app.config import logger
+
+
+def get_analyst_ratings(stock: yf.Ticker, info: dict) -> dict:
     try:
         target_mean = info.get("targetMeanPrice")
         target_high = info.get("targetHighPrice")
@@ -43,8 +52,8 @@ def get_analyst_ratings(stock, info: dict) -> dict:
                         "to_grade": row.get("ToGrade", ""),
                         "action": row.get("Action", ""),
                     })
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("analyst upgrades/downgrades history unavailable", exc_info=exc)
 
         return {
             "consensus": consensus,

@@ -1,3 +1,7 @@
+"""AI endpoints: /synthesize turns a section's data into investment-grade prose
+via the shared Anthropic client, and /numa proxies the browser's chat to
+Anthropic, streaming both back as SSE.
+"""
 # ============================================================
 # === AI ENDPOINTS — synthesize + Numa chat proxy ===
 # ============================================================
@@ -70,7 +74,7 @@ Data: {data}""",
 }
 
 @router.post("/synthesize")
-async def synthesize(req: SynthesisRequest):
+async def synthesize(req: SynthesisRequest) -> StreamingResponse:
     if not ANTHROPIC_CLIENT.api_key:
         return {"error": "ANTHROPIC_API_KEY not configured"}
 
@@ -118,7 +122,7 @@ class NumaRequest(BaseModel):
 
 
 @router.post("/numa")
-def numa_chat(req: NumaRequest):
+def numa_chat(req: NumaRequest) -> StreamingResponse:
     def gen():
         try:
             client = anthropic.Anthropic(api_key=req.api_key)

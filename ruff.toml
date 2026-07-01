@@ -1,0 +1,21 @@
+# Ruff configuration for Numa.
+#
+# A focused, high-signal rule set: pyflakes (F), pycodestyle errors/warnings
+# (E/W), and import sorting (I). E501 (line length) is intentionally not
+# enforced — several lines are deliberately long (the SECTION_PROMPTS templates,
+# the aligned MODULE_REGISTRY, and a few macro one-liner ternaries) and
+# reflowing them would hurt readability more than help.
+
+line-length = 100
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E501",  # line too long — see note above
+    "E731",  # lambda assignment — two concise local lambdas in compute_fibonacci
+             # (price_of) read more clearly inline than as nested defs
+]
+
+[lint.isort]
+known-first-party = ["app"]

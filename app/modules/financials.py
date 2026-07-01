@@ -1,15 +1,20 @@
+"""Financials module: income/balance/cashflow highlights, margins, multiples.
+
+Transformer over the caller's ``stock`` handle and ``info`` bag
+(see docs/module-pattern.md).
+"""
 # ============================================================
 # === MODULE 3: FINANCIALS ===
 # ============================================================
 
 import pandas as pd
+import yfinance as yf
 
 
-def get_financials(stock, info: dict) -> dict:
+def get_financials(stock: yf.Ticker, info: dict) -> dict:
     try:
         income = stock.income_stmt
         balance = stock.balance_sheet
-        cashflow = stock.cashflow
 
         def safe_row(df, candidates):
             for c in candidates:
@@ -43,9 +48,6 @@ def get_financials(stock, info: dict) -> dict:
         debt = safe_row(balance, ["Total Debt", "Long Term Debt"])
         assets = safe_row(balance, ["Total Assets"])
         equity = safe_row(balance, ["Stockholders Equity", "Common Stock Equity"])
-
-        rev_vals = rev.dropna()
-        gp_vals = gp.dropna()
 
         margins = []
         for col in rev.index[:3]:

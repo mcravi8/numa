@@ -1,16 +1,21 @@
+"""Congressional-trades module: STOCK Act disclosures for a ticker via Quiver.
+
+Fetcher — calls Quiver Quantitative itself with an explicit 10s timeout; returns
+demo/empty results without a key (see docs/module-pattern.md).
+"""
 # ============================================================
 # === MODULE 11: CONGRESSIONAL TRADES (Quiver Quantitative) ===
 # ============================================================
 
-import requests
 from datetime import datetime, timedelta
+
+import requests
 
 from app.config import (
     QUIVER_API_KEY,
     QUIVER_BASE,
     QUIVER_HEADERS,
 )
-
 
 # Real STOCK Act disclosures. Members of the US Congress must publicly file
 # their securities trades within 45 days, so the gap between when a trade was

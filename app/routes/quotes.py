@@ -1,3 +1,7 @@
+"""Live quote endpoints: a single real-time quote for the price ticker and a
+batch endpoint for the favorites watchlist. Both read yfinance's cheap fast_info
+so the frontend can poll them frequently.
+"""
 # ============================================================
 # === LIVE QUOTE ENDPOINTS ===
 # ============================================================
@@ -8,13 +12,14 @@
 import yfinance as yf
 from fastapi import APIRouter
 
+from app.config import logger
 from app.utils import _json_safe, _ovr
 
 router = APIRouter()
 
 
 @router.get("/quote/{ticker}")
-def live_quote(ticker: str):
+def live_quote(ticker: str) -> dict:
     """Lightweight, real live quote for the price ticker.
 
     Uses fast_info (a cheap Yahoo endpoint) so the frontend can poll this every
@@ -32,8 +37,8 @@ def live_quote(ticker: str):
             price = fi.get("lastPrice")
             prev = fi.get("previousClose")
             cur = fi.get("currency")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("fast_info unavailable for %s, falling back to .info", ticker, exc_info=exc)
         # marketState isn't in fast_info; only pay for the full info call if we
         # still need a price (keeps the common polling path fast).
         if price is None or prev is None:
@@ -62,7 +67,7 @@ _NAME_CACHE = {}
 
 
 @router.get("/quotes")
-def batch_quotes(symbols: str = "", names: str = ""):
+def batch_quotes(symbols: str = "", names: str = "") -> dict:
     """Batch quotes for the favorites watchlist: price + change vs. previous close
     for many symbols at once, fetched in parallel via fast_info (cheap). Pass a
     `names` sublist to also resolve company names (one slow info call per unknown,
@@ -92,8 +97,8 @@ def batch_quotes(symbols: str = "", names: str = ""):
                 if price is not None and prev:
                     q["change"] = _ovr(price - prev)
                     q["change_pct"] = _ovr((price - prev) / prev * 100)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("fast_info unavailable for %s", sym, exc_info=exc)
             if sym in need_names:
                 if sym in _NAME_CACHE:
                     q["name"] = _NAME_CACHE[sym]
@@ -106,8 +111,8 @@ def batch_quotes(symbols: str = "", names: str = ""):
                         nm = None
                     _NAME_CACHE[sym] = nm
                     q["name"] = nm
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("batch quote failed for %s", sym, exc_info=exc)
         return q
 
     out = {}

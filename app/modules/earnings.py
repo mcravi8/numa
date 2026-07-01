@@ -1,12 +1,21 @@
+"""Earnings module: EPS beat/miss history and the next earnings date.
+
+Transformer over the caller's ``stock`` handle and ``info`` bag
+(see docs/module-pattern.md).
+"""
 # ============================================================
 # === MODULE 9: EARNINGS ===
 # ============================================================
 
-import pandas as pd
 from datetime import datetime
 
+import pandas as pd
+import yfinance as yf
 
-def get_earnings(stock, info: dict) -> dict:
+from app.config import logger
+
+
+def get_earnings(stock: yf.Ticker, info: dict) -> dict:
     try:
         eh = stock.earnings_history
         history = []
@@ -49,16 +58,16 @@ def get_earnings(stock, info: dict) -> dict:
             elif hasattr(cal, "loc"):
                 try:
                     next_date = str(cal.loc["Earnings Date"].iloc[0])[:10]
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("earnings calendar parse failed", exc_info=exc)
 
         days_until = None
         if next_date and next_date != "None":
             try:
                 nd = datetime.strptime(next_date[:10], "%Y-%m-%d")
                 days_until = (nd - datetime.now()).days
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("earnings date parse failed for %r", next_date, exc_info=exc)
 
         return {
             "next_earnings_date": next_date if next_date and next_date != "None" else None,

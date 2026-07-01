@@ -1,3 +1,6 @@
+"""Notes persistence: load/save the saved-AI-output array. The frontend always
+pushes the complete notes array, which is written to disk verbatim.
+"""
 # ============================================================
 # === NOTES PERSISTENCE ===
 # ============================================================
@@ -15,7 +18,7 @@ router = APIRouter()
 
 
 @router.get("/notes")
-def get_notes():
+def get_notes() -> list:
     """Load notes from disk. Returns empty list if file doesn't exist."""
     try:
         if NOTES_FILE.exists():
@@ -26,7 +29,7 @@ def get_notes():
 
 
 @router.post("/notes")
-def save_notes(notes: List[Any]):
+def save_notes(notes: List[Any]) -> dict:
     """Persist the full notes array to disk. Frontend sends the complete array."""
     try:
         NOTES_FILE.write_text(

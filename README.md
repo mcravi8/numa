@@ -6,12 +6,39 @@ For any ticker it assembles a 360° view — quote, financials, technicals (SMA/
 
 ## Current state
 
-The project is intentionally two main files right now:
+The backend has been refactored from a single `main.py` into an `app/` package.
+`main.py` is now a thin entrypoint (`from app import create_app; app = create_app()`)
+so `uvicorn main:app` still works. The frontend/PWA assets live in `static/`.
 
-- `main.py` — the entire backend (FastAPI app, all data modules, AI endpoints)
-- `index.html` — the entire frontend (SPA + charting + Numa chat UI)
+```
+.
+├── main.py                 # entrypoint shim → app.create_app()
+├── run.py                  # uvicorn launcher
+├── app/
+│   ├── __init__.py         # create_app(): CORS, routers, /static mount
+│   ├── config.py           # env, API keys, shared clients, paths, logger
+│   ├── utils.py            # _json_safe / _ovr JSON-safety helpers
+│   ├── routes/             # one APIRouter per concern
+│   │   ├── frontend.py     #   /, manifest, sw.js, icons
+│   │   ├── analyze.py      #   /analyze/{ticker}, /analyze/stream/{ticker}
+│   │   ├── quotes.py       #   /quote/{ticker}, /quotes
+│   │   ├── notes.py        #   /notes
+│   │   ├── ai.py           #   /synthesize, /numa
+│   │   ├── macro.py        #   /macro (+ FRED helpers)
+│   │   └── search.py       #   /search, /health
+│   └── modules/            # one file per per-ticker data module
+│       ├── company.py  quote.py  financials.py  technicals.py
+│       ├── options.py  insider.py  news.py  peers.py
+│       ├── earnings.py  ratings.py  congress.py
+│       └── premium_demo.py #   dark-pool / GEX / options-flow demo data
+├── static/                 # index.html, manifest.json, sw.js, icons, generate_icons.py
+├── docs/                   # module-pattern.md, REFACTOR_PLAN.md, NIGHT_RUN_REPORT.md
+└── tests/                  # pytest smoke suite
+```
 
-It is being incrementally refactored into a proper package structure; watch the commit history.
+Both `/analyze/{ticker}` and its streaming variant are driven by a single ordered
+module registry in `app/routes/analyze.py`, so a new data module is registered in
+exactly one place. Lint config lives in `ruff.toml`; run `ruff check .`.
 
 ## Quick start
 

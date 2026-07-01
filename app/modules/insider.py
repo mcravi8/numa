@@ -1,9 +1,15 @@
+"""Insider-activity module: recent SEC Form 4 transactions for a ticker.
+
+Fetcher — pulls the CIK and Form 4 filings from SEC EDGAR itself with explicit
+timeouts (see docs/module-pattern.md).
+"""
 # ============================================================
 # === MODULE 6: INSIDER ACTIVITY ===
 # ============================================================
 
-import requests
 from datetime import datetime, timedelta
+
+import requests
 
 from app.config import SEC_HEADERS
 

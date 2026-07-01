@@ -1,13 +1,21 @@
+"""Technicals module: SMA/RSI/MACD/Bollinger plus Fibonacci, regression channel,
+candle/chart patterns, and historical P/E overlays.
+
+Transformer over the caller's ``stock`` handle; every ``compute_*`` overlay
+degrades to None/[] rather than raising (see docs/module-pattern.md).
+"""
 # ============================================================
 # === MODULE 4: TECHNICALS ===
 # ============================================================
 
 import math
+
 import numpy as np
 import pandas as pd
+import yfinance as yf
 
+from app.config import logger
 from app.utils import _ovr
-
 
 # --- Overlay geometry: Fibonacci, psychological levels, regression channel,
 # --- candlestick + chart patterns, and historical P/E. All deterministic,
@@ -286,8 +294,8 @@ def compute_pe_history(stock, hist):
                         eps_idx = [_naive(i) for i in ttm.index]
                         eps_val = [float(v) for v in ttm.values]
                         method = "ttm_reported_eps"
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("pe_history: reported-EPS TTM path failed", exc_info=exc)
 
         # 2) Fallback: annual diluted/basic EPS
         if not eps_idx:
@@ -301,8 +309,8 @@ def compute_pe_history(stock, hist):
                         eps_idx = [p[0] for p in pairs]
                         eps_val = [p[1] for p in pairs]
                         method = "annual_eps"
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("pe_history: annual-EPS fallback failed", exc_info=exc)
 
         if len(eps_idx) < 2:
             return None
@@ -345,7 +353,7 @@ def compute_pe_history(stock, hist):
         return None
 
 
-def get_technicals(stock) -> dict:
+def get_technicals(stock: yf.Ticker) -> dict:
     try:
         hist = stock.history(period="5y", interval="1d")
         if hist.empty:
