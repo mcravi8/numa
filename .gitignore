@@ -11,9 +11,9 @@ __pycache__/
 venv/
 .pytest_cache/
 
-# Generated icons (rebuild with generate_icons.py)
-icon-192.png
-icon-512.png
+# Generated icons (rebuild with static/generate_icons.py)
+static/icon-192.png
+static/icon-512.png
 
 # OS / editor
 .DS_Store

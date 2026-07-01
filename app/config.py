@@ -33,7 +33,7 @@ ANTHROPIC_CLIENT = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 # --- Finnhub — one shared client, or None when no key is configured ------
 # (news and peers use this instead of rebuilding a client on every call).
 # Pin an explicit 10-second timeout: news and peers are fetchers, and
-# module-pattern.md's "fetcher" rule wants their external calls bounded —
+# docs/module-pattern.md's "fetcher" rule wants their external calls bounded —
 # so we assert 10s here rather than silently inheriting the finnhub
 # library's default. (company_news / news_sentiment / company_peers take no
 # per-call timeout kwarg, so the shared client is the one place to set it.)
@@ -55,4 +55,8 @@ QUIVER_HEADERS = {"Accept": "application/json",
 
 # --- File paths — BASE_DIR is the repo root (this file lives in app/) -----
 BASE_DIR = pathlib.Path(__file__).parent.parent
+# Frontend/PWA assets (index.html, manifest.json, sw.js, icons) live here and
+# are both served by the explicit frontend routes and mounted at /static.
+STATIC_DIR = BASE_DIR / "static"
+# notes.json stays at the repo root (git-ignored personal data), not in static/.
 NOTES_FILE = BASE_DIR / "notes.json"

@@ -18,7 +18,7 @@ from app.config import (
 # public learned late. That gap is surfaced per trade (disclosure_lag_days) and
 # in the summary (avg/max lag + a notable_flag for the slowest disclosure).
 #
-# This is a FETCHER (see module-pattern.md, "Rules for a new module"): it takes
+# This is a FETCHER (see docs/module-pattern.md, "Rules for a new module"): it takes
 # the bare ticker, calls Quiver itself with an explicit 10s timeout, and reads
 # its auth from the module-level QUIVER_HEADERS constant near the top of the
 # file. A clean run that simply finds no disclosures returns an empty trades

@@ -42,7 +42,7 @@ planned but not yet done — see `docs/REFACTOR_PLAN.md`):
 Supporting files: `run.py` (uvicorn entrypoint), `start.sh` / `stop.sh` (manage
 a background instance), `requirements.txt` (pinned), `manifest.json` + `sw.js` +
 `icon*.png` (PWA assets), `.env` (keys, git-ignored), `notes.json` (saved AI
-output, git-ignored), `module-pattern.md` and `docs/REFACTOR_PLAN.md` (docs).
+output, git-ignored), `docs/module-pattern.md` and `docs/REFACTOR_PLAN.md` (docs).
 
 ## Running it
 
@@ -85,7 +85,7 @@ commands with that interpreter too.
 
 Keys load from `.env` via `load_dotenv()` at startup, read with `os.getenv(...)`.
 
-## Module pattern (see `module-pattern.md` for the full write-up)
+## Module pattern (see `docs/module-pattern.md` for the full write-up)
 
 The per-ticker data capabilities are each implemented as a sibling function
 under a `# === MODULE N: NAME ===` banner. The **skeleton every module shares**:

@@ -36,7 +36,7 @@ Open http://localhost:8000. Install as a PWA from Chrome's address bar if you wa
 
 ## Architecture notes
 
-`module-pattern.md` documents the shared skeleton of the per-ticker data modules and the rules new modules must follow.
+`docs/module-pattern.md` documents the shared skeleton of the per-ticker data modules and the rules new modules must follow.
 
 ## Disclaimer
 
