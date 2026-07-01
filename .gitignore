@@ -1,0 +1,30 @@
+# Secrets — never commit
+.env
+
+# Personal data
+notes.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Generated icons (rebuild with generate_icons.py)
+icon-192.png
+icon-512.png
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Logs / runtime
+*.log
+uvicorn.pid
+
+# Runtime/local (stock_terminal specific)
+logs/
+.backend.pid
+.gstack/
+.claude/

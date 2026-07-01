@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+yfinance==1.4.1
+curl_cffi
+pandas
+numpy
+requests
+python-dotenv
+finnhub-python
+anthropic
+pandas-datareader

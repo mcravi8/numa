@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- White background tile -->
+  <rect width="512" height="512" rx="112" fill="#ffffff"/>
+  <!-- Blue vest mark (variant 2) centered on the tile.
+       Source art is in a 0..200 space; translate(-24,-18.4) scale(2.8)
+       centers the vest's bbox (~55..145 x, 36..160 y) on the 512 tile and
+       keeps it inside the maskable safe zone (corners ~203px < 205px radius). -->
+  <g transform="translate(-24, -18.4) scale(2.8)"
+     fill="none" stroke="#124391" stroke-width="8"
+     stroke-linecap="round" stroke-linejoin="round">
+    <!-- vest body -->
+    <path d="M 100 160 L 60 160 Q 55 160 55 155 L 55 95 Q 75 75 55 55 L 84 52 Q 100 62 116 52 L 145 55 Q 125 75 145 95 L 145 155 Q 145 160 140 160 Z"/>
+    <!-- flat top collar -->
+    <path d="M 84 52 L 84 36 L 116 36 L 116 52"/>
+    <!-- center seam / zipper -->
+    <path d="M 100 36 L 100 160"/>
+    <!-- bottom left pocket -->
+    <path d="M 70 115 L 70 145"/>
+    <!-- bottom right pocket -->
+    <path d="M 130 115 L 130 145"/>
+  </g>
+</svg>
