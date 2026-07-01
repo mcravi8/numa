@@ -51,11 +51,9 @@
 #   Endpoint: GET https://api.polygon.io/v2/last/trade/{ticker}?apiKey={key}
 # ============================================================
 
-import os
 import math
 import time
 import json
-import pathlib
 import requests
 import numpy as np
 import pandas as pd
@@ -66,11 +64,21 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from dotenv import load_dotenv
 from pydantic import BaseModel
 import anthropic
 
-load_dotenv()
+from app.config import (
+    ANTHROPIC_CLIENT,
+    BASE_DIR,
+    FINNHUB_CLIENT,
+    FRED_KEY,
+    NOTES_FILE,
+    QUIVER_API_KEY,
+    QUIVER_BASE,
+    QUIVER_HEADERS,
+    SEC_HEADERS,
+)
+from app.utils import _json_safe, _ovr
 
 app = FastAPI(title="Research Terminal")
 app.add_middleware(
@@ -79,22 +87,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-SEC_HEADERS = {"User-Agent": "ResearchTerminal demo@researchterm.com"}
-ANTHROPIC_CLIENT = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
-
-# Quiver Quantitative — congressional (STOCK Act) trade disclosures.
-# Auth note: Quiver's maintained Python client sends "Authorization: Token
-# <key>"; their published OpenAPI spec documents "Bearer <key>". The server
-# accepts both prefixes, so we follow the official client. If a valid key ever
-# returns 401, flip "Token" to "Bearer" on the line below.
-QUIVER_API_KEY = os.getenv("QUIVER_API_KEY", "")
-QUIVER_BASE = "https://api.quiverquant.com/beta"
-QUIVER_HEADERS = {"Accept": "application/json",
-                  "Authorization": f"Token {QUIVER_API_KEY}"}
-
-BASE_DIR = pathlib.Path(__file__).parent
-NOTES_FILE = BASE_DIR / "notes.json"
 
 
 # ============================================================
@@ -180,27 +172,6 @@ def health():
 # ============================================================
 # === MAIN ANALYZE ENDPOINT ===
 # ============================================================
-
-def _json_safe(obj):
-    """Recursively coerce a payload to JSON-native types: numpy scalars → python
-    scalars, NaN/Inf → None. yfinance leaks np.float64 / np.bool_ (e.g.
-    earnings.beat = np.True_, financials margins) which otherwise 500 the strict
-    (allow_nan=False) JSONResponse on this non-streaming endpoint. Same family as
-    the macro layer's _macro_clean, generalized to numpy types."""
-    if isinstance(obj, dict):
-        return {k: _json_safe(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_json_safe(v) for v in obj]
-    if isinstance(obj, np.bool_):
-        return bool(obj)
-    if isinstance(obj, np.integer):
-        return int(obj)
-    if isinstance(obj, np.floating):
-        obj = float(obj)
-    if isinstance(obj, float):
-        return None if (math.isnan(obj) or math.isinf(obj)) else obj
-    return obj
-
 
 @app.get("/analyze/{ticker}")
 def analyze(ticker: str, mode: str = "free"):
@@ -649,14 +620,6 @@ def get_financials(stock, info: dict) -> dict:
 # --- Numa's prose cite identical numbers. Every helper degrades to None/[] on
 # --- bad data and never raises into get_technicals. _ovr() rounds for JSON and
 # --- returns None on NaN/Inf (Starlette renders with allow_nan=False).
-
-def _ovr(x):
-    try:
-        x = float(x)
-        return None if (math.isnan(x) or math.isinf(x)) else round(x, 2)
-    except Exception:
-        return None
-
 
 def _fib_label(r):
     s = f"{r * 100:.1f}"
@@ -1463,18 +1426,15 @@ def _ai_news_sentiment(ticker: str, articles: list) -> dict:
 
 def get_news_sentiment(ticker: str) -> dict:
     try:
-        finnhub_key = os.getenv("FINNHUB_API_KEY", "")
         articles = []
         sentiment_data = {}
         buzz = None
 
-        if finnhub_key:
-            import finnhub
-            client = finnhub.Client(api_key=finnhub_key)
+        if FINNHUB_CLIENT:
             from_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
             to_date = datetime.now().strftime("%Y-%m-%d")
             try:
-                news = client.company_news(ticker, _from=from_date, to=to_date)
+                news = FINNHUB_CLIENT.company_news(ticker, _from=from_date, to=to_date)
                 for a in (news or [])[:15]:
                     articles.append({
                         "headline": a.get("headline", ""),
@@ -1486,7 +1446,7 @@ def get_news_sentiment(ticker: str) -> dict:
             except Exception:
                 pass
             try:
-                s = client.news_sentiment(ticker)
+                s = FINNHUB_CLIENT.news_sentiment(ticker)
                 buzz = s.get("buzz", {}).get("buzz")
                 bullish = s.get("sentiment", {}).get("bullishPercent", 0.5)
                 bearish = s.get("sentiment", {}).get("bearishPercent", 0.5)
@@ -1551,14 +1511,11 @@ def get_news_sentiment(ticker: str) -> dict:
 
 def get_peers(ticker: str, info: dict) -> dict:
     try:
-        finnhub_key = os.getenv("FINNHUB_API_KEY", "")
         peer_tickers = []
 
-        if finnhub_key:
-            import finnhub
-            client = finnhub.Client(api_key=finnhub_key)
+        if FINNHUB_CLIENT:
             try:
-                peer_tickers = client.company_peers(ticker) or []
+                peer_tickers = FINNHUB_CLIENT.company_peers(ticker) or []
                 peer_tickers = [p for p in peer_tickers if p != ticker][:5]
             except Exception:
                 pass
@@ -2134,7 +2091,6 @@ def numa_chat(req: NumaRequest):
 # (indices only). Cached for 1 hour to avoid hammering FRED on every load.
 
 FRED_BASE = "https://api.stlouisfed.org/fred"
-FRED_KEY = os.getenv("FRED_API_KEY", "")
 
 MACRO_CACHE = {"data": None, "timestamp": None}
 MACRO_TTL = 3600  # 1 hour in seconds
