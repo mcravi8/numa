@@ -141,7 +141,8 @@ def test_propose_derives_name_from_tools_when_model_omits_it(
 def test_propose_generalizes_request_tickers(
     tmp_skills, patch_research, fake_anthropic, make_msg,
 ):
-    # Model leaks a concrete ticker into the name AND a step description.
+    # Model leaks a request ticker into the name AND a step description. The name
+    # residue forces a clean tool-derived name; the step is hard-scrubbed.
     model_out = {"name": "AAPL Momentum", "subtasks": [
         {"name": "technicals", "description": "Fetch AAPL technicals and momentum", "depends_on": []},
     ]}
@@ -153,7 +154,7 @@ def test_propose_generalizes_request_tickers(
 
     step_desc = draft["plan"]["subtasks"][0]["description"]
     assert "AAPL" not in step_desc and "{ticker}" in step_desc
-    assert "AAPL" not in draft["name"] and "{ticker}" in draft["name"]  # "AAPL Momentum" → "{ticker} Momentum"
+    assert draft["name"] == "Technicals Review"   # ticker-in-name → tool-derived label
 
 
 def test_propose_generalizes_dollar_symbol_in_description(
@@ -295,3 +296,74 @@ def test_propose_recovers_from_refusal_single_reason_plan(
     assert "no ticker" not in draft["name"].lower()
     assert draft["name"] != draft["description"]
     assert 0 < len(draft["name"]) <= 40
+
+
+# ============================================================
+# === PROPOSE — model-led company recognition + residue check ===
+# ============================================================
+
+def _residue_free(draft) -> bool:
+    """No identity residue in the draft's name + step descriptions: no $-token,
+    no leftover ACME, no {braced} token other than {ticker}."""
+    import re
+    blob = draft["name"] + " " + " ".join(s["description"] for s in draft["plan"]["subtasks"])
+    if re.search(r"\$[A-Za-z]", blob):
+        return False
+    if "acme" in blob.lower():
+        return False
+    return all(b == "{ticker}" for b in re.findall(r"\{[^{}]*\}", blob))
+
+
+# A well-behaved model plans against the concrete stand-in it was handed.
+_CLEAN_ACME = {"name": "Earnings And News Review", "subtasks": [
+    {"name": "earnings", "description": "Fetch ACME earnings history and beat rate", "depends_on": []},
+    {"name": "news_sentiment", "description": "Assess recent ACME news sentiment", "depends_on": []},
+    {"name": "reason", "description": "Synthesize ACME earnings and news into a call", "depends_on": ["earnings", "news_sentiment"]},
+]}
+
+
+@pytest.mark.parametrize("description", [
+    "apple: earnings and news",
+    "Apple Inc. earnings and news",
+    "aapl earnings and news",
+    "$aapl earnings and news",
+    "{AAPL} earnings and news",
+    "earnings and news deep dive",   # no company mentioned at all
+])
+def test_propose_any_company_form_yields_ticker_placeholder(
+    description, tmp_skills, patch_research, fake_anthropic, make_msg,
+):
+    # Whatever form the company takes (name/symbol/casing/wrapping/none), the
+    # draft comes back with {ticker} in every step and zero identity residue.
+    patch_research(fake_anthropic(create_fn=lambda kw: make_msg(json.dumps(_CLEAN_ACME))))
+    draft = client.post("/skills/propose", json={"description": description}).json()
+
+    steps = draft["plan"]["subtasks"]
+    assert all("{ticker}" in s["description"] for s in steps)
+    assert _residue_free(draft)
+    assert draft["description"] == description   # user's text preserved verbatim
+
+
+def test_propose_retries_when_output_leaks_company(
+    tmp_skills, patch_research, fake_anthropic, make_msg,
+):
+    calls = {"n": 0}
+
+    def create_fn(kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Leaks the company: name says "Apple", a step carries "$AAPL".
+            return make_msg(json.dumps({"name": "Apple Deep Dive", "subtasks": [
+                {"name": "earnings", "description": "Fetch $AAPL earnings history for Apple", "depends_on": []}]}))
+        return make_msg(json.dumps({"name": "Earnings Deep Dive", "subtasks": [
+            {"name": "earnings", "description": "Fetch ACME earnings history", "depends_on": []}]}))
+
+    patch_research(fake_anthropic(create_fn=create_fn))
+    draft = client.post(
+        "/skills/propose", json={"description": "for apple: earnings", "tickers": ["AAPL"]},
+    ).json()
+
+    assert calls["n"] == 2                       # residue triggered exactly one retry
+    assert draft["name"] == "Earnings Deep Dive"
+    assert _residue_free(draft)
+    assert all("{ticker}" in s["description"] for s in draft["plan"]["subtasks"])

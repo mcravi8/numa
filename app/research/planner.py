@@ -120,20 +120,29 @@ def build_plan(objective, tickers=None, *, max_subtasks=AUTO_MAX_SUBTASKS, clien
 
 
 # ============================================================
-# === PROPOSE — draft a reusable skill (invert-the-substitution) ===
+# === PROPOSE — draft a reusable skill (model-led company recognition) ===
 # ============================================================
-# The skill door (RESEARCH_PLAN.md). Real models plan poorly against an abstract
-# {ticker} placeholder (they refuse — "no ticker provided" — or write concrete
-# symbols anyway). So we invert the problem: BEFORE the call we swap the user's
-# symbols for one concrete EXAMPLE_TICKER and tell the model plainly it is a
-# stand-in; AFTER the call we swap that injected token back to {ticker}. Because
-# WE chose the token, the substitution is deterministic — no guessing what the
-# model wrote. The name is validated (short label, not the sentence, no token
-# remnant), retried once on failure, and finally derived from the plan's tools.
+# The skill door (RESEARCH_PLAN.md). A skill is reused across tickers, so the
+# draft must carry ZERO company identity. Users reference a company in every
+# form — "apple", "Apple Inc.", "aapl", "$aapl", "AAPL", "{AAPL}", or only
+# implicitly — and no regex catches them all. So recognition is the MODEL's job:
+# it plans for one concrete stand-in, EXAMPLE_TICKER, and is told to put no
+# company name/symbol anywhere. AFTER the call we deterministically swap that
+# injected token back to {ticker} (we chose it, so it's exact), then run a
+# RESIDUE CHECK on the returned name + steps — any $-token, any {braced} token
+# other than {ticker}, any request ticker, or a leftover EXAMPLE_TICKER. On
+# residue: retry once with a corrective that quotes what leaked; then fall back
+# to a tool-derived name + hard-scrubbed steps. A regex pre-scrub of the request
+# survives only as a secondary net.
 
 # The stand-in symbol: unambiguous, Title Case, and never a real MODULE_REGISTRY
 # input, so it can't collide with a fetched ticker.
 EXAMPLE_TICKER = "ACME"
+
+# Residue patterns for the identity check on returned text.
+_DOLLAR_RE = re.compile(r"\$[A-Za-z][A-Za-z.]{0,7}")   # $AAPL, $aapl, $brk.b
+_BRACED_RE = re.compile(r"\{[^{}]*\}")                 # {AAPL}, {company}, {ticker}
+_ACME_RE = re.compile(rf"\$?\b{EXAMPLE_TICKER}\b", re.IGNORECASE)
 
 # Human labels for the tool-derived fallback name (keys are MODULE_REGISTRY /
 # macro tools). Anything unmapped falls back to a title-cased key.
@@ -145,13 +154,6 @@ _TOOL_LABELS = {
     "gamma_exposure": "Gamma Exposure", "macro": "Macro",
 }
 
-_PROPOSE_CORRECTIVE = (
-    'Your previous JSON was rejected. Return {"name","subtasks"} exactly, where '
-    '"name" is a short Title Case label (<=40 chars) summarizing the goal — NOT '
-    "the request sentence and NOT containing " + EXAMPLE_TICKER + ' — and '
-    '"subtasks" contains at least one data-fetch tool step.'
-)
-
 
 def _example_symbols(description, tickers) -> set:
     """Real symbols the user referenced: the request's tickers plus any
@@ -161,14 +163,44 @@ def _example_symbols(description, tickers) -> set:
     return syms
 
 
-def _swap(text: str, symbols, target: str) -> str:
-    """Case-insensitively replace ``{ticker}`` and every symbol (bare or
-    ``$``-prefixed) with ``target``. Used both ways: description→EXAMPLE_TICKER
-    before the call, EXAMPLE_TICKER/symbols→{ticker} after."""
-    out = (text or "").replace("{ticker}", target)
+def _pre_scrub(text: str, symbols) -> str:
+    """Secondary net only: before the call, replace {ticker}, $-symbols, and the
+    request's tickers with EXAMPLE_TICKER. Recognizing company *names* (Apple,
+    Apple Inc.) is the model's job — see the system prompt — not this regex."""
+    out = (text or "").replace("{ticker}", EXAMPLE_TICKER)
     for sym in symbols:
         if sym:
-            out = re.sub(rf"\$?\b{re.escape(sym)}\b", target, out, flags=re.IGNORECASE)
+            out = re.sub(rf"\$?\b{re.escape(sym)}\b", EXAMPLE_TICKER, out, flags=re.IGNORECASE)
+    return out
+
+
+def _invert(text: str) -> str:
+    """Deterministic post-call substitution: the injected EXAMPLE_TICKER → {ticker}."""
+    return _ACME_RE.sub("{ticker}", text or "")
+
+
+def _residue(text: str, symbols) -> list:
+    """Identity residue in returned text: $-tokens, {braced} tokens other than
+    {ticker}, request-ticker symbols, or a leftover EXAMPLE_TICKER."""
+    text = text or ""
+    found = list(_DOLLAR_RE.findall(text))
+    found += [b for b in _BRACED_RE.findall(text) if b != "{ticker}"]
+    if _ACME_RE.search(text):
+        found.append(EXAMPLE_TICKER)
+    for sym in symbols:
+        if sym and re.search(rf"\b{re.escape(sym)}\b", text, flags=re.IGNORECASE):
+            found.append(sym)
+    return found
+
+
+def _scrub(text: str, symbols) -> str:
+    """Aggressive fallback: force every residue form to {ticker}."""
+    out = _ACME_RE.sub("{ticker}", text or "")
+    out = _DOLLAR_RE.sub("{ticker}", out)
+    out = _BRACED_RE.sub("{ticker}", out)   # {ticker}→{ticker} no-op; {AAPL}→{ticker}
+    for sym in symbols:
+        if sym:
+            out = re.sub(rf"\b{re.escape(sym)}\b", "{ticker}", out, flags=re.IGNORECASE)
     return out
 
 
@@ -242,16 +274,21 @@ def _propose_system_prompt() -> str:
     fetchers = ", ".join(sorted(FETCH_TOOLS))
     return (
         "You are the planner for a stock-research engine, drafting a REUSABLE "
-        f"skill. You are given ONE example ticker, {EXAMPLE_TICKER} — a stand-in "
-        "that the app replaces with the user's real symbol at run time. Plan as "
-        f"if analyzing {EXAMPLE_TICKER}; write {EXAMPLE_TICKER} wherever a symbol "
-        "belongs (do not invent other tickers).\n\n"
+        "skill that is run later against MANY different tickers.\n\n"
+        "The user may reference a company in ANY form — a name (\"Apple\", "
+        "\"Apple Inc.\"), a ticker (AAPL, aapl, $aapl, {AAPL}), any casing or "
+        "wrapping, or only implicitly — or not name one at all. Whatever they "
+        f"reference, plan for the single stand-in ticker {EXAMPLE_TICKER}, which "
+        "the app replaces with the user's real symbol at run time.\n\n"
+        f"Carry ZERO company identity into your output: write {EXAMPLE_TICKER} — "
+        "and nothing else (never a company name, never a $-symbol, never braces) "
+        f"— wherever the subject appears. The \"name\" must NOT mention any "
+        f"company or {EXAMPLE_TICKER} at all.\n\n"
         "Return ONLY minified JSON, no prose, no code fences, matching exactly:\n"
         '{"name":"<short Title Case label>","subtasks":[{"name":"<tool>",'
         '"description":"<what this step does>","depends_on":["<earlier name>"]}]}\n\n'
-        '"name": a concise Title Case label for the skill, at most 40 characters, '
-        'summarizing the goal (e.g. "Earnings Deep Dive"). It must NOT be the '
-        f"user's sentence and must NOT contain {EXAMPLE_TICKER}.\n\n"
+        '"name": a concise Title Case label (<=40 chars) summarizing the GOAL '
+        '(e.g. "Earnings Deep Dive"), not the user\'s sentence.\n\n'
         "Each subtask's \"name\" MUST be one of these tools:\n"
         f"  fetch tools (pull data for {EXAMPLE_TICKER}): {fetchers}\n"
         f"  \"{REASON_TOOL}\": analyze/compare the outputs of earlier subtasks.\n\n"
@@ -262,37 +299,71 @@ def _propose_system_prompt() -> str:
     )
 
 
-def propose_plan(description, tickers=None, *, max_subtasks=SKILL_MAX_SUBTASKS, client=None):
-    """Draft a reusable skill from a one-sentence description (invert-the-
-    substitution — see the section banner).
+def _invert_plan(plan) -> Plan:
+    """Invert EXAMPLE_TICKER → {ticker} across every step description."""
+    if not plan:
+        return Plan(subtasks=[])
+    return Plan(subtasks=[
+        Subtask(name=st.name, description=_invert(st.description), depends_on=list(st.depends_on))
+        for st in plan.subtasks
+    ])
 
-    Returns ``(name, Plan)``: a short Title-Case name (validated, retried once,
-    else derived from the plan's tools) and a ticker-agnostic plan whose step
-    descriptions use ``{ticker}``. Never raises."""
+
+def _plan_residue(name: str, plan, symbols) -> list:
+    """All identity residue across the name and every step description."""
+    found = _residue(name, symbols)
+    for st in (plan.subtasks if plan else []):
+        found += _residue(st.description, symbols)
+    return found
+
+
+def _corrective_msg(residue) -> str:
+    msg = (
+        f"Your previous JSON was rejected. Plan ONLY for the example ticker "
+        f"{EXAMPLE_TICKER}: put {EXAMPLE_TICKER} — never a company name, $-symbol, "
+        "or braces — wherever the subject appears. The \"name\" must be a short "
+        "Title Case label (<=40 chars) summarizing the goal, NOT the request "
+        f"sentence and NOT mentioning any company or {EXAMPLE_TICKER}. Include at "
+        "least one data-fetch tool step."
+    )
+    leaked = sorted({r for r in residue if r})
+    if leaked:
+        msg += " Remove these leaked tokens: " + ", ".join(leaked[:8]) + "."
+    return msg
+
+
+def propose_plan(description, tickers=None, *, max_subtasks=SKILL_MAX_SUBTASKS, client=None):
+    """Draft a reusable skill from a one-sentence description — see the section
+    banner. Recognizing the referenced company (in any form) is the model's job;
+    we inject one stand-in ticker, invert it back to {ticker} deterministically,
+    then residue-check + retry-once + hard-scrub so the returned name and steps
+    carry zero company identity. Returns ``(name, Plan)``. Never raises."""
     client = client or ANTHROPIC_CLIENT
     description = (description or "").strip()
     symbols = _example_symbols(description, tickers)
-    canonical = _swap(description, symbols, EXAMPLE_TICKER)  # (1) plan against ACME
+    canonical = _pre_scrub(description, symbols)  # secondary net only
 
-    name, plan = "", None
+    name, plan, residue = "", None, []
     if client.api_key:
-        name, plan = _propose_once(client, canonical, max_subtasks)
-        if not (_name_ok(name, description, canonical) and _has_fetch(plan)):
-            name, plan = _propose_once(client, canonical, max_subtasks, corrective=_PROPOSE_CORRECTIVE)
+        for attempt in range(2):  # initial call + one corrective retry
+            raw_name, raw_plan = _propose_once(
+                client, canonical, max_subtasks,
+                corrective=_corrective_msg(residue) if attempt else None,
+            )
+            name = _invert(raw_name or "")   # (2) ACME → {ticker}, deterministic
+            plan = _invert_plan(raw_plan)
+            residue = _plan_residue(name, plan, symbols)
+            if _name_ok(name, description, canonical) and _has_fetch(plan) and not residue:
+                return name, plan
 
-    # (3) ensure a usable plan, and a clean name — derived from tools when the
-    # model's name is bad OR its plan is degenerate (a refusal we can't trust).
+    # Fallback: usable plan + clean tool-derived name + hard-scrubbed steps.
     if not (plan and plan.subtasks):
         plan = _degraded_plan(canonical)
-    if not _name_ok(name, description, canonical) or not _has_fetch(plan):
+    if not _name_ok(name, description, canonical) or not _has_fetch(plan) or _residue(name, symbols):
         name = _name_from_tools(plan)
-
-    # (2) invert: the injected EXAMPLE_TICKER (and, as a second net, any real
-    # symbol the model echoed) → the {ticker} placeholder. Deterministic.
-    invert = {EXAMPLE_TICKER} | symbols
-    name = _swap(name, invert, "{ticker}")
+    name = _scrub(name, symbols)
     plan = Plan(subtasks=[
-        Subtask(name=st.name, description=_swap(st.description, invert, "{ticker}"),
+        Subtask(name=st.name, description=_scrub(st.description, symbols),
                 depends_on=list(st.depends_on))
         for st in plan.subtasks
     ])
