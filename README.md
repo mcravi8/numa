@@ -1,5 +1,7 @@
 # Numa — Personal 360° Stock Research Terminal
 
+[![CI](https://github.com/mcravi8/numa/actions/workflows/ci.yml/badge.svg)](https://github.com/mcravi8/numa/actions/workflows/ci.yml)
+
 A self-hosted stock analysis terminal: FastAPI backend + single-page PWA frontend, with an AI analyst ("Numa") powered by Claude.
 
 For any ticker it assembles a 360° view — quote, financials, technicals (SMA/RSI/MACD/Bollinger, Fibonacci, regression channel, candle & chart patterns, historical P/E), options flow with unusual-contract detection and max pain, SEC insider filings, news sentiment, peer comparison, earnings history, analyst ratings, congressional trades (Quiver), and a macro dashboard — then streams it to the browser over SSE and lets Numa synthesize and chat about it.

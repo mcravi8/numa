@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          # Match the runtime documented in CLAUDE.md (Homebrew python3.11 locally).
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Test (offline)
+        # Deselect the network-marked tests explicitly: GitHub runners have
+        # network, so the live-Yahoo tests would otherwise run and make CI flaky
+        # on upstream hiccups. CI must only ever fail on our code.
+        run: pytest -m "not network"
