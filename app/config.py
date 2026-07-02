@@ -69,6 +69,31 @@ ANTHROPIC_CLIENT = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 RESEARCH_PLANNER_MODEL = os.getenv("RESEARCH_PLANNER_MODEL", "claude-sonnet-4-6")
 RESEARCH_REASON_MODEL = os.getenv("RESEARCH_REASON_MODEL", "claude-sonnet-4-6")
 RESEARCH_SYNTHESIS_MODEL = os.getenv("RESEARCH_SYNTHESIS_MODEL", "claude-sonnet-4-6")
+# The chat auto-research classifier is a cheap Haiku-class gate (a few tokens).
+RESEARCH_CLASSIFIER_MODEL = os.getenv("RESEARCH_CLASSIFIER_MODEL", "claude-haiku-4-5-20251001")
+
+# --- Chat auto-research kill-switch --------------------------------------
+# When off, the /numa chat never deploys an auto-plan — every question is
+# answered directly. Set NUMA_AUTO_RESEARCH=0 to force direct-only.
+NUMA_AUTO_RESEARCH = os.getenv("NUMA_AUTO_RESEARCH", "1").strip().lower() not in (
+    "0", "false", "no", "off", "",
+)
+
+# --- Research cost estimate — list prices ($/token), display only --------
+# Powers the "usage" event's estimated USD. Config-overridable; these are list
+# prices, so the figure is an estimate, not a bill. (model -> (input, output).)
+RESEARCH_PRICING = {
+    "claude-sonnet-4-6": (3.0 / 1e6, 15.0 / 1e6),
+    "claude-haiku-4-5-20251001": (1.0 / 1e6, 5.0 / 1e6),
+    "claude-opus-4-8": (15.0 / 1e6, 75.0 / 1e6),
+}
+_DEFAULT_PRICE = (3.0 / 1e6, 15.0 / 1e6)
+
+
+def estimate_cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
+    """Estimated USD for a call, from the list-price table above."""
+    inp, out = RESEARCH_PRICING.get(model, _DEFAULT_PRICE)
+    return (input_tokens or 0) * inp + (output_tokens or 0) * out
 
 # --- Finnhub — one shared client, or None when no key is configured ------
 # (news and peers use this instead of rebuilding a client on every call).

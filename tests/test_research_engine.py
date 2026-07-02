@@ -21,17 +21,21 @@ from app.research.schemas import Plan, Subtask
 # === Mocked Anthropic client (no network) ===
 # ============================================================
 
-def _content(text):
-    """Mimic client.messages.create(...) return: .content[0].text."""
-    return SimpleNamespace(content=[SimpleNamespace(text=text)])
+def _content(text, input_tokens=0, output_tokens=0):
+    """Mimic client.messages.create(...) return: .content[0].text (+ .usage)."""
+    return SimpleNamespace(
+        content=[SimpleNamespace(text=text)],
+        usage=SimpleNamespace(input_tokens=input_tokens, output_tokens=output_tokens),
+    )
 
 
 class _FakeStream:
     """Mimic client.messages.stream(...) — a context manager exposing a
     .text_stream iterable and .get_final_message()."""
 
-    def __init__(self, tokens):
+    def __init__(self, tokens, usage=(0, 0)):
         self._tokens = list(tokens)
+        self._usage = usage
 
     def __enter__(self):
         return self
@@ -44,13 +48,15 @@ class _FakeStream:
         return iter(self._tokens)
 
     def get_final_message(self):
-        return SimpleNamespace(usage=SimpleNamespace(input_tokens=1, output_tokens=1))
+        return SimpleNamespace(usage=SimpleNamespace(
+            input_tokens=self._usage[0], output_tokens=self._usage[1]))
 
 
 class _FakeMessages:
-    def __init__(self, create_fn, stream_tokens):
+    def __init__(self, create_fn, stream_tokens, stream_usage):
         self._create_fn = create_fn
         self._stream_tokens = stream_tokens
+        self._stream_usage = stream_usage
         self.create_calls = []
         self.stream_calls = []
 
@@ -60,13 +66,15 @@ class _FakeMessages:
 
     def stream(self, **kwargs):
         self.stream_calls.append(kwargs)
-        return _FakeStream(self._stream_tokens)
+        return _FakeStream(self._stream_tokens, self._stream_usage)
 
 
 class FakeAnthropic:
-    def __init__(self, create_fn=None, stream_tokens=("syn", "thesis"), api_key="test-key"):
+    def __init__(self, create_fn=None, stream_tokens=("syn", "thesis"),
+                 stream_usage=(0, 0), api_key="test-key"):
         self.api_key = api_key
-        self.messages = _FakeMessages(create_fn or (lambda kw: _content("{}")), stream_tokens)
+        self.messages = _FakeMessages(
+            create_fn or (lambda kw: _content("{}")), stream_tokens, stream_usage)
 
 
 def _drain(agen):
@@ -286,3 +294,40 @@ def test_executor_renders_ticker_in_reason_prompt_and_events(fake_stock, recorde
     assert started["description"] == "Assess AAPL momentum"
     plan_ev = next(e for e in events if e["type"] == "plan")
     assert "{ticker}" not in json.dumps(plan_ev["plan"])
+
+
+# ============================================================
+# === USAGE ACCUMULATION ===
+# ============================================================
+
+def test_run_plan_emits_usage_event_summing_all_calls(fake_stock, recorded_info):
+    from app.config import estimate_cost_usd
+    from app.research.executor import UsageAccumulator
+
+    plan = Plan(subtasks=[
+        Subtask(name="technicals", description="pull technicals", depends_on=[]),
+        Subtask(name="reason", description="assess", depends_on=["technicals"]),
+    ])
+    # reason create → (11 in, 22 out); synthesis stream → (33 in, 44 out).
+    client = FakeAnthropic(
+        create_fn=lambda kw: _content("reasoned", 11, 22),
+        stream_tokens=("done.",), stream_usage=(33, 44),
+    )
+    # Seed the planner's tokens (55 in, 66 out) to prove they're included too.
+    seed = UsageAccumulator()
+    seed.add("claude-sonnet-4-6", SimpleNamespace(input_tokens=55, output_tokens=66))
+
+    events = _drain(run_plan(
+        plan, ["AAPL"], client=client,
+        stock_factory=lambda t: (fake_stock, recorded_info), usage=seed,
+    ))
+
+    usage_ev = next(e for e in events if e["type"] == "usage")
+    assert usage_ev["input_tokens"] == 11 + 33 + 55
+    assert usage_ev["output_tokens"] == 22 + 44 + 66
+    assert usage_ev["cost_usd"] == round(
+        estimate_cost_usd("claude-sonnet-4-6", 11 + 33 + 55, 22 + 44 + 66), 4)
+
+    # The usage event precedes complete (it's the run's final tally).
+    types = [e["type"] for e in events]
+    assert types.index("usage") < types.index("complete")

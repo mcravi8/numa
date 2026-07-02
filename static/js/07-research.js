@@ -511,6 +511,169 @@ document.addEventListener('change',e=>{
   renderSection('skills');
 });
 
+/* ============================================================
+   CHAT AUTO-RESEARCH (the automatic door)
+   ============================================================
+   The /numa chat may deploy a throwaway research plan for clearly multi-step
+   questions instead of a direct answer. A cheap LOCAL heuristic gates simple
+   questions out with NO backend call (identical latency); only complex-looking
+   questions consult the backend classifier via POST /numa/research. On deploy we
+   render live progress rows + streamed synthesis + cost into the chat bubble and
+   offer "Save as skill". Mirrors app/research/classifier._signals_complexity. */
+
+const NUMA_COMPLEX_RE = /\b(compare|vs\.?|versus|deep[\s-]?dive|build (?:a|the) case|make (?:a|the) case|bull (?:and|&|\/) bear|bear (?:and|&|\/) bull|walk me through|step[\s-]?by[\s-]?step|comprehensive|full (?:analysis|breakdown|picture|report|dd)|thesis|everything (?:about|on)|end[\s-]?to[\s-]?end)\b/i;
+
+function numaSignalsComplexity(question, tickers){
+  if((tickers||[]).length >= 2) return true;
+  if(NUMA_COMPLEX_RE.test(question||'')) return true;
+  return (question||'').trim().split(/\s+/).filter(Boolean).length >= 45;
+}
+function numaScopeTickers(){
+  const tabs = (typeof islandTabs==='function') ? islandTabs() : [];
+  return [...new Set(tabs.map(t=>t&&t.ticker).filter(Boolean).map(t=>t.toUpperCase()))];
+}
+
+// Returns true if it handled the question as a research run (chat should stop).
+async function numaTryAutoResearch(question){
+  question=(question||'').trim();
+  if(!question) return false;
+  const tickers=numaScopeTickers();
+  if(!numaSignalsComplexity(question, tickers)) return false;   // simple → never leaves
+  let decision;
+  try{
+    const mode=(typeof PREMIUM_MODE!=='undefined'&&PREMIUM_MODE)?'premium':'free';
+    const r=await fetch(`${API_BASE}/numa/research`,{method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({question, tickers, mode})});
+    if(!r.ok) return false;
+    decision=await r.json();
+  }catch(e){ return false; }
+  if(!decision || !decision.deploy || !decision.run_id) return false;
+  await numaRunResearchInChat(question, decision);
+  return true;
+}
+
+async function numaRunResearchInChat(question, decision){
+  const userNode = addUser(question);
+  if(typeof numaHistory!=='undefined') numaHistory.push({role:'user', content:question});
+  const node = addAI('research');
+  if(typeof pinLatest==='function') pinLatest(userNode);
+  const mtext = node.querySelector('.mtext');
+  const nSteps = ((decision.plan&&decision.plan.subtasks)||[]).length;
+  mtext.innerHTML = `<div class="rsk-chat-run">
+    <div class="rsk-chat-plan">Numa deployed a ${nSteps}-step research plan</div>
+    <div class="rsk-run-steps" id="numaRunRows"></div>
+    <div class="rsk-memo rsk-chat-memo" id="numaMemo" style="display:none;"></div>
+  </div>`;
+  const rows = mtext.querySelector('#numaRunRows'), memoEl = mtext.querySelector('#numaMemo');
+  const t0 = (typeof performance!=='undefined') ? performance.now() : 0;
+  const run = {memoRaw:'', usage:null, _dirty:false};
+
+  try{
+    const res = await fetch(`${API_BASE}/research/stream/${decision.run_id}`);
+    if(!res.ok||!res.body) throw new Error('stream unavailable');
+    const reader=res.body.getReader(), dec=new TextDecoder(); let buf='';
+    while(true){
+      let chunk; try{ chunk=await reader.read(); }catch(e){ break; }
+      if(chunk.done) break;
+      buf+=dec.decode(chunk.value,{stream:true});
+      const lines=buf.split('\n'); buf=lines.pop();
+      for(const line of lines){
+        if(!line.startsWith('data:'))continue;
+        let p=line.slice(5).trim(); if(!p||p==='[DONE]')continue;
+        p=p.replace(/\b-?Infinity\b/g,'null').replace(/\bNaN\b/g,'null');
+        let ev; try{ ev=JSON.parse(p); }catch(e){ continue; }
+        numaHandleResearchEvent(ev, rows, memoEl, run);
+      }
+    }
+  }catch(err){
+    memoEl.style.display=''; memoEl.innerHTML='<span class="rsk-err">Research run failed: '+rskEsc(err.message||'error')+'</span>';
+  }
+  numaFlushChatMemo(memoEl, run);
+
+  // Finalize: history, note (Save to notes), cost meta + header spend, Save-as-skill.
+  const memo = run.memoRaw||'';
+  if(typeof numaHistory!=='undefined') numaHistory.push({role:'assistant', content:memo});
+  const u = run.usage || {input_tokens:0, output_tokens:0, cost_usd:0};
+  node._note = {title:question.slice(0,70), text:memo, cost:u.cost_usd||0, icon:RSK_BOLT};
+  if(typeof totalSpend!=='undefined'){
+    totalSpend += u.cost_usd||0;
+    const sp=document.getElementById('spendAmt'); if(sp&&typeof fmtSpend==='function') sp.textContent=fmtSpend();
+  }
+  const secs = t0 ? ((performance.now()-t0)/1000).toFixed(1) : '';
+  const mm = node.querySelector('.mmeta');
+  if(mm) mm.innerHTML = 'research · '+(((u.input_tokens||0)+(u.output_tokens||0))).toLocaleString()+
+    ' tok <span class="cost">$'+(u.cost_usd||0).toFixed(3)+'</span>'+(secs?' <span>'+secs+'s</span>':'');
+  numaAddSaveSkillButton(node, question, decision);
+  if(typeof scrollThread==='function') scrollThread();
+}
+
+function numaHandleResearchEvent(ev, rows, memoEl, run){
+  if(ev.type==='subtask_started'){
+    const tool=ev.tool||resolveToolJS(ev.name);
+    const row=document.createElement('div');
+    row.className='rsk-prow live'; row.id='numarow-'+rskSlug(ev.name);
+    row.innerHTML=`<span class="rsk-prow-ic"><span class="lc-spin"></span></span>
+      <div class="rsk-prow-body"><div class="rsk-prow-title">${rskEsc(rskToolLabel(tool))} <span class="rsk-prow-name">${rskEsc(ev.name)}</span></div>
+      <div class="rsk-prow-sub">${rskEsc(ev.description||'')}</div></div>`;
+    rows.appendChild(row); if(typeof scrollThread==='function') scrollThread();
+  } else if(ev.type==='subtask_completed'){
+    const row=document.getElementById('numarow-'+rskSlug(ev.name)); if(!row) return;
+    const err=ev.data&&ev.data.error, ic=row.querySelector('.rsk-prow-ic');
+    if(ic) ic.innerHTML=err?'<span class="rsk-x">!</span>':`<span class="lc-done">${LC_CHECK}</span>`;
+    row.classList.remove('live'); row.classList.add(err?'err':'done');
+  } else if(ev.type==='synthesis_token'){
+    memoEl.style.display=''; run.memoRaw+=ev.token||''; run._dirty=true;
+    requestAnimationFrame(()=>numaFlushChatMemo(memoEl, run));
+  } else if(ev.type==='complete'){
+    if(typeof ev.synthesis==='string'&&ev.synthesis) run.memoRaw=ev.synthesis;
+    run._dirty=true; numaFlushChatMemo(memoEl, run);
+  } else if(ev.type==='usage'){
+    run.usage=ev;
+  } else if(ev.type==='error'){
+    memoEl.style.display=''; memoEl.innerHTML='<span class="rsk-err">'+rskEsc(ev.error||'error')+'</span>';
+  }
+}
+function numaFlushChatMemo(memoEl, run){
+  if(!run._dirty) return; run._dirty=false;
+  memoEl.style.display=''; memoEl.innerHTML=renderMD(run.memoRaw)||'';
+  if(typeof scrollThread==='function') scrollThread();
+}
+
+/* ---- Save-as-skill: generalize the used plan's tickers → {ticker}, POST /skills ---- */
+function numaAddSaveSkillButton(node, question, decision){
+  const acts=node.querySelector('.mactions'); if(!acts) return;
+  const b=document.createElement('button');
+  b.setAttribute('data-numaskill','1');
+  b._question=question; b._plan=decision.plan; b._tickers=decision.tickers||[];
+  b.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h7l-1 8 10-12h-7z"/></svg>Save as skill';
+  acts.appendChild(b);
+}
+function numaGeneralizePlan(plan, tickers){
+  const syms=(tickers||[]).map(t=>String(t).toUpperCase()).filter(Boolean);
+  const gen=s=>{ let out=String(s||''); syms.forEach(sym=>{
+    out=out.replace(new RegExp('\\$?\\b'+sym.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\b','ig'),'{ticker}'); }); return out; };
+  return {subtasks:((plan&&plan.subtasks)||[]).map(s=>({name:s.name, description:gen(s.description), depends_on:s.depends_on||[]}))};
+}
+function numaSkillName(question){
+  const words=String(question||'').replace(/[^\w\s]/g,' ').trim().split(/\s+/).filter(Boolean).slice(0,6);
+  let n=words.map(w=>w.charAt(0).toUpperCase()+w.slice(1)).join(' ');
+  return rskTrimName(n, 40) || 'Chat Research';
+}
+async function numaSaveAsSkill(btn){
+  const body={name:numaSkillName(btn._question), description:btn._question,
+              plan:numaGeneralizePlan(btn._plan, btn._tickers)};
+  try{
+    const r=await fetch(`${API_BASE}/skills`,{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    if(!r.ok) throw new Error('save failed');
+    if(typeof toast==='function') toast('Saved as skill · edit it in Skills');
+    btn.disabled=true; btn.innerHTML='✓ Saved as skill';
+    if(typeof loadSkills==='function') loadSkills();
+  }catch(e){ if(typeof toast==='function') toast('Could not save skill'); }
+}
+document.addEventListener('click',e=>{
+  const sk=e.target.closest('[data-numaskill]'); if(sk){ numaSaveAsSkill(sk); }
+});
+
 /* ============ INIT ============ */
 // Populate the nav badge + cache on load (DOM is ready — scripts are at body end).
 loadSkills();

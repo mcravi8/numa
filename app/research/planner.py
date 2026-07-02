@@ -79,10 +79,13 @@ def _system_prompt() -> str:
     )
 
 
-def build_plan(objective, tickers=None, *, max_subtasks=AUTO_MAX_SUBTASKS, client=None) -> Plan:
+def build_plan(objective, tickers=None, *, max_subtasks=AUTO_MAX_SUBTASKS, client=None, usage=None) -> Plan:
     """Plan ``objective`` over ``tickers`` (one Claude call). Degrades to a
     single-subtask plan on malformed output or zero subtasks; always enforces the
-    ``max_subtasks`` cap. Never raises — planning failure is a degraded plan."""
+    ``max_subtasks`` cap. Never raises — planning failure is a degraded plan.
+
+    ``usage`` is an optional UsageAccumulator; when given, this planner call's
+    tokens are folded in so a chat auto-run's cost covers planning too."""
     client = client or ANTHROPIC_CLIENT
     objective = (objective or "").strip()
     tickers = [t.upper().strip() for t in (tickers or []) if t and t.strip()]
@@ -103,6 +106,8 @@ def build_plan(objective, tickers=None, *, max_subtasks=AUTO_MAX_SUBTASKS, clien
             system=_system_prompt(),
             messages=[{"role": "user", "content": user_msg}],
         )
+        if usage is not None:
+            usage.add(RESEARCH_PLANNER_MODEL, getattr(resp, "usage", None))
         raw = resp.content[0].text.strip()
         if raw.startswith("```"):
             raw = raw.split("```")[1].lstrip("json").strip()

@@ -24,8 +24,9 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.research.executor import run_plan
-from app.research.planner import build_plan
+from app.research.classifier import decide
+from app.research.executor import UsageAccumulator, run_plan
+from app.research.planner import AUTO_MAX_SUBTASKS, build_plan
 from app.research.schemas import Plan
 
 router = APIRouter()
@@ -109,6 +110,7 @@ def research_stream(run_id: str) -> StreamingResponse:
             async for event in run_plan(
                 run["plan"], run["tickers"],
                 objective=run["objective"], mode=run["mode"],
+                usage=run.get("usage"),
             ):
                 yield _sse(event)
         except Exception as e:  # never leak a 500 mid-stream; end cleanly
@@ -116,3 +118,38 @@ def research_stream(run_id: str) -> StreamingResponse:
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
+
+
+# ============================================================
+# === CHAT AUTO-RESEARCH — decide direct vs deploy a plan ===
+# ============================================================
+# The automatic door (RESEARCH_PLAN.md): the /numa chat asks whether a question
+# warrants a throwaway auto-plan. Hard-biased to direct (see classifier.decide).
+# On deploy it builds a plan capped at AUTO_MAX_SUBTASKS (5), parks it as a
+# single-use run seeded with the planner's token usage, and hands back the plan +
+# run_id for the chat to stream (progress rows → synthesis → usage).
+
+class ChatResearchRequest(BaseModel):
+    question: str
+    tickers: List[str] = Field(default_factory=list)
+    mode: str = "free"
+
+
+@router.post("/numa/research")
+def numa_research(req: ChatResearchRequest) -> dict:
+    verdict = decide(req.question, req.tickers)
+    if not verdict["deploy"]:
+        return {"deploy": False, "reason": verdict["reason"]}
+
+    usage = UsageAccumulator()  # seeded with the planner call, carried into the run
+    plan = build_plan(req.question, req.tickers, max_subtasks=AUTO_MAX_SUBTASKS, usage=usage)
+    run_id = uuid.uuid4().hex
+    _RUNS[run_id] = {
+        "plan": plan,
+        "tickers": req.tickers,
+        "objective": req.question,
+        "mode": req.mode,
+        "usage": usage,
+    }
+    return {"deploy": True, "run_id": run_id, "plan": plan.model_dump(),
+            "tickers": req.tickers, "reason": verdict["reason"]}

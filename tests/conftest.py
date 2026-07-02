@@ -159,14 +159,18 @@ def recorded_info():
 # both the engine unit tests and the HTTP smoke tests can use it.
 
 
-def fake_msg(text):
-    """Mimic client.messages.create(...) → .content[0].text."""
-    return SimpleNamespace(content=[SimpleNamespace(text=text)])
+def fake_msg(text, input_tokens=0, output_tokens=0):
+    """Mimic client.messages.create(...) → .content[0].text (+ .usage)."""
+    return SimpleNamespace(
+        content=[SimpleNamespace(text=text)],
+        usage=SimpleNamespace(input_tokens=input_tokens, output_tokens=output_tokens),
+    )
 
 
 class _FakeStream:
-    def __init__(self, tokens):
+    def __init__(self, tokens, usage=(0, 0)):
         self._tokens = list(tokens)
+        self._usage = usage
 
     def __enter__(self):
         return self
@@ -179,27 +183,32 @@ class _FakeStream:
         return iter(self._tokens)
 
     def get_final_message(self):
-        return SimpleNamespace(usage=SimpleNamespace(input_tokens=1, output_tokens=1))
+        return SimpleNamespace(usage=SimpleNamespace(
+            input_tokens=self._usage[0], output_tokens=self._usage[1]))
 
 
 class _FakeMessages:
-    def __init__(self, create_fn, stream_tokens):
+    def __init__(self, create_fn, stream_tokens, stream_usage):
         self._create_fn = create_fn
         self._stream_tokens = stream_tokens
+        self._stream_usage = stream_usage
 
     def create(self, **kwargs):
         return self._create_fn(kwargs)
 
     def stream(self, **kwargs):
-        return _FakeStream(self._stream_tokens)
+        return _FakeStream(self._stream_tokens, self._stream_usage)
 
 
 class FakeAnthropic:
     """Drop-in stand-in for the shared Anthropic client (no network)."""
 
-    def __init__(self, create_fn=None, stream_tokens=("Bottom line: ", "hold."), api_key="test-key"):
+    def __init__(self, create_fn=None, stream_tokens=("Bottom line: ", "hold."),
+                 stream_usage=(0, 0), api_key="test-key"):
         self.api_key = api_key
-        self.messages = _FakeMessages(create_fn or (lambda kw: fake_msg("reasoned analysis")), stream_tokens)
+        self.messages = _FakeMessages(
+            create_fn or (lambda kw: fake_msg("reasoned analysis")),
+            stream_tokens, stream_usage)
 
 
 @pytest.fixture

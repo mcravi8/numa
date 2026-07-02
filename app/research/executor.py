@@ -33,6 +33,7 @@ from app.config import (
     ANTHROPIC_CLIENT,
     RESEARCH_REASON_MODEL,
     RESEARCH_SYNTHESIS_MODEL,
+    estimate_cost_usd,
     logger,
 )
 from app.research.schemas import Plan, render_plan
@@ -53,6 +54,41 @@ ALLOWED_TOOLS = sorted(FETCH_TOOLS | {REASON_TOOL})
 # Cap on how much prior-output JSON is fed into a reason/synthesis prompt, so a
 # fat options/technicals bag can't blow the context window or the bill.
 _CONTEXT_CHARS = 6000
+
+
+class UsageAccumulator:
+    """Sums token usage across every Claude call in a run (planner, reason steps,
+    synthesis), per model, so the run can emit one 'usage' event with an
+    estimated USD cost. Shared by the planner (seed) and executor."""
+
+    def __init__(self):
+        self.by_model = {}  # model -> [input_tokens, output_tokens]
+
+    def add(self, model: str, usage) -> None:
+        """Fold in one call's ``usage`` (an object with input_tokens/output_tokens,
+        e.g. Anthropic's resp.usage or stream.get_final_message().usage)."""
+        if usage is None:
+            return
+        it = int(getattr(usage, "input_tokens", 0) or 0)
+        ot = int(getattr(usage, "output_tokens", 0) or 0)
+        slot = self.by_model.setdefault(model, [0, 0])
+        slot[0] += it
+        slot[1] += ot
+
+    @property
+    def input_tokens(self) -> int:
+        return sum(v[0] for v in self.by_model.values())
+
+    @property
+    def output_tokens(self) -> int:
+        return sum(v[1] for v in self.by_model.values())
+
+    def cost_usd(self) -> float:
+        return round(sum(estimate_cost_usd(m, i, o) for m, (i, o) in self.by_model.items()), 4)
+
+    def event(self) -> dict:
+        return {"type": "usage", "input_tokens": self.input_tokens,
+                "output_tokens": self.output_tokens, "cost_usd": self.cost_usd()}
 
 
 def resolve_tool(name: str) -> str:
@@ -100,8 +136,9 @@ def _run_fetch(tool: str, tickers, ctxs: dict) -> dict:
     return out
 
 
-def _reason(client, description: str, context: dict) -> dict:
-    """Free-form Claude step over the outputs of a subtask's depends_on."""
+def _reason(client, description: str, context: dict):
+    """Free-form Claude step over the outputs of a subtask's depends_on.
+    Returns ``(bag, usage)`` so the caller can accumulate token usage."""
     system = (
         "You are a senior equity research analyst working one step of a larger "
         "research plan. Reason over the provided data to satisfy the step's "
@@ -116,7 +153,7 @@ def _reason(client, description: str, context: dict) -> dict:
         system=system,
         messages=[{"role": "user", "content": user_msg}],
     )
-    return {"reasoning": resp.content[0].text.strip()}
+    return {"reasoning": resp.content[0].text.strip()}, getattr(resp, "usage", None)
 
 
 async def run_plan(
@@ -127,14 +164,19 @@ async def run_plan(
     mode: str = "free",
     client=None,
     stock_factory=None,
+    usage=None,
 ):
     """Async generator: execute ``plan`` over ``tickers``, yielding typed events.
 
     ``client`` (Anthropic) and ``stock_factory`` are injectable for offline
     tests; they default to the shared client and a live ``yf.Ticker`` fetch.
+    ``usage`` is an optional pre-seeded :class:`UsageAccumulator` (e.g. carrying
+    the planner call's tokens for a chat auto-run); reason + synthesis usage is
+    folded in and a final ``usage`` event is emitted before ``complete``.
     """
     client = client or ANTHROPIC_CLIENT
     stock_factory = stock_factory or _default_stock_factory
+    usage = usage if usage is not None else UsageAccumulator()
     tickers = [t.upper().strip() for t in (tickers or []) if t and t.strip()]
 
     # Run-time resolver: fill {ticker} in step descriptions so the reason /
@@ -162,7 +204,8 @@ async def run_plan(
         try:
             if tool == REASON_TOOL:
                 context = {dep: outputs[dep] for dep in st.depends_on if dep in outputs}
-                data = _reason(client, st.description, context)
+                data, reason_usage = _reason(client, st.description, context)
+                usage.add(RESEARCH_REASON_MODEL, reason_usage)
             else:
                 data = _run_fetch(tool, tickers, ctxs)
         except Exception as e:  # per-subtask failure: report, don't abort
@@ -195,8 +238,10 @@ async def run_plan(
             for text in stream.text_stream:
                 full += text
                 yield {"type": "synthesis_token", "token": text}
+            usage.add(RESEARCH_SYNTHESIS_MODEL, getattr(stream.get_final_message(), "usage", None))
     except Exception as e:
         yield {"type": "error", "error": f"synthesis failed: {e}"}
         return
 
+    yield usage.event()
     yield {"type": "complete", "synthesis": full, "outputs": outputs}

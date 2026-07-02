@@ -501,6 +501,13 @@ async function askNuma(userMessage, opts){
   const ensureNumaOpen=()=>{ if(!aip.classList.contains('show'))openIsland(); };
   if(!key){ ensureNumaOpen(); showKeyPrompt(userMessage, opts); if(opts.onDone)opts.onDone(); return; }
   ensureNumaOpen();
+  // AUTO-RESEARCH (the automatic door): a typed free-form question may deploy a
+  // throwaway research plan instead of a direct answer. Simple questions fall
+  // straight through with no extra call (see 07-research.js). Canned action
+  // buttons are never auto-routed.
+  if(!opts.action && typeof numaTryAutoResearch==='function'){
+    if(await numaTryAutoResearch(userMessage)){ if(opts.onDone)opts.onDone(); return; }
+  }
   const userNode=addUser(opts.label||userMessage, !!opts.action);
   numaHistory.push({role:'user',content:userMessage});
   const topic=opts.topic||topicOf(userMessage);
