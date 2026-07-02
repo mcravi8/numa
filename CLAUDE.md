@@ -29,20 +29,45 @@ One concern per commit; never mix a refactor with a behavior change. Verify boot
 + `/analyze/AAPL` before every commit. This is the invariant the incremental
 refactor (see `docs/REFACTOR_PLAN.md`) is built around.
 
-## Two-file layout
+## Package layout
 
-The project is intentionally **two main files** right now (a package refactor is
-planned but not yet done — see `docs/REFACTOR_PLAN.md`):
+The backend has been refactored from a single `main.py` into an `app/` package —
+the Prompts 1–7 refactor in `docs/REFACTOR_PLAN.md` is **complete**. `main.py` is
+now a thin `create_app()` shim, so `uvicorn main:app` (and `python run.py`) still
+works.
 
-- **`main.py`** — the entire backend: FastAPI app, every data module, the AI
-  endpoints, macro, and search. ~2.7k lines.
-- **`index.html`** — the entire frontend: SPA, charting, and the Numa chat UI.
-  ~3.6k lines.
+```
+main.py                    # entrypoint shim → app.create_app()
+run.py                     # uvicorn launcher
+app/
+├── __init__.py            # create_app(): FastAPI instance, CORS, router
+│                          #   registration, catch-all /static mount (last)
+├── config.py              # env, API keys, shared clients (Anthropic/Finnhub),
+│                          #   paths (BASE_DIR/STATIC_DIR/NOTES_FILE), logger
+├── utils.py               # _json_safe / _ovr JSON-safety helpers
+├── routes/                # one APIRouter per concern
+│   ├── frontend.py        #   /, /manifest.json, /sw.js, icons
+│   ├── analyze.py         #   /analyze/{ticker}, /analyze/stream/{ticker}
+│   │                      #   (both driven by one ordered MODULE_REGISTRY)
+│   ├── quotes.py          #   /quote/{ticker}, /quotes
+│   ├── notes.py           #   /notes
+│   ├── ai.py              #   /synthesize, /numa
+│   ├── macro.py           #   /macro (+ FRED helpers)
+│   └── search.py          #   /search, /health
+└── modules/               # one file per per-ticker data module (see below):
+                           #   company quote financials technicals options
+                           #   insider news peers earnings ratings congress
+                           #   premium_demo
+static/                    # index.html (the SPA), manifest.json, sw.js,
+                           #   icon.svg, icon*.png, generate_icons.py
+docs/                      # module-pattern.md, REFACTOR_PLAN.md, NIGHT_RUN_REPORT.md
+```
 
-Supporting files: `run.py` (uvicorn entrypoint), `start.sh` / `stop.sh` (manage
-a background instance), `requirements.txt` (pinned), `manifest.json` + `sw.js` +
-`icon*.png` (PWA assets), `.env` (keys, git-ignored), `notes.json` (saved AI
-output, git-ignored), `docs/module-pattern.md` and `docs/REFACTOR_PLAN.md` (docs).
+Supporting files: `start.sh` / `stop.sh` (manage a background instance),
+`requirements.txt` (pinned) + `requirements-dev.txt` (pytest/httpx/ruff),
+`ruff.toml` (lint config), `.env` (keys, git-ignored), `notes.json` (saved AI
+output, at the repo root, git-ignored). The frontend (`static/index.html`,
+~3.6k lines) is still a single file — splitting it is a separate, later track.
 
 ## Running it
 
@@ -61,7 +86,7 @@ the deps; the runtime lives on Homebrew **python3.11**. `start.sh` auto-selects
 it (via the installed `uvicorn` script's shebang, then `python3.11`). Run manual
 commands with that interpreter too.
 
-## Endpoints (all in `main.py`)
+## Endpoints (in `app/routes/`, registered by `create_app()`)
 
 - Frontend/PWA: `GET /`, `/manifest.json`, `/sw.js`, `/icon-192.png`, `/icon-512.png`
 - Analysis: `GET /analyze/{ticker}` (full JSON), `GET /analyze/stream/{ticker}` (SSE)
@@ -133,8 +158,11 @@ single rounded floats. Route new numeric output through them.
 
 ## Refactor context
 
-This repo is being incrementally refactored from the two-file layout into an
-`app/` package, one small commit at a time, so the git history reads as real
-work. The plan, target structure, and per-step prompts are in
-`docs/REFACTOR_PLAN.md`. **Do not restructure ahead of that plan** unless asked;
-keep honoring the standing rule above at every step.
+The incremental refactor from the two-file layout into the `app/` package is
+**complete** — all of Prompts 1–7 in `docs/REFACTOR_PLAN.md` have landed (see
+`docs/NIGHT_RUN_REPORT.md` for the Prompts 5–7 write-up and equivalence checks).
+Further structural changes should be their own deliberate, one-concern commits
+that keep honoring the standing rule above. The plan's "Later, independent
+commits" list is still open (tighten CORS to localhost, split `index.html` into
+`css/`/`js/`, add CI for ruff + pytest, per-module fixtures instead of live
+yfinance, activate premium modules).

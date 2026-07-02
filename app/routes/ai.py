@@ -27,10 +27,6 @@ router = APIRouter()
 # === SYNTHESIZE ENDPOINT ===
 # ============================================================
 
-class SynthesisPayload:
-    pass
-
-
 class SynthesisRequest(BaseModel):
     ticker: str
     company_name: str
