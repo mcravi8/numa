@@ -15,7 +15,6 @@ uuid ``id``, and ``version`` increments on every edit.
 """
 
 import json
-import re
 import uuid
 from typing import List
 
@@ -24,7 +23,7 @@ from pydantic import BaseModel, Field
 
 from app.config import SKILLS_FILE
 from app.research.planner import SKILL_MAX_SUBTASKS, propose_plan
-from app.research.schemas import Plan, Skill, Subtask
+from app.research.schemas import Plan, Skill
 
 router = APIRouter()
 
@@ -115,46 +114,18 @@ def delete_skill(skill_id: str) -> dict:
 # === PROPOSE — planner drafts a plan template (not persisted) ===
 # ============================================================
 
-def _collect_symbols(tickers, description: str) -> set:
-    """Symbols to scrub from the draft: the request's tickers plus any
-    ``$``-prefixed symbols found in the description (e.g. ``$NVDA`` → ``NVDA``)."""
-    syms = {t.strip().upper() for t in (tickers or []) if t and t.strip()}
-    syms |= {m.upper() for m in re.findall(r"\$([A-Za-z]{1,6})", description or "")}
-    return syms
-
-
-def _generalize(text: str, symbols) -> str:
-    """Replace whole-word occurrences of each symbol (bare or ``$``-prefixed) with
-    the literal ``{ticker}`` placeholder, case-insensitively."""
-    out = text or ""
-    for sym in symbols:
-        if sym:
-            out = re.sub(rf"\$?\b{re.escape(sym)}\b", "{ticker}", out, flags=re.IGNORECASE)
-    return out
-
-
 @router.post("/skills/propose")
 def propose_skill(req: ProposeRequest) -> dict:
-    """One planner call over the skill's description → a DRAFT skill for the user
+    """One planner pass over the skill's description → a DRAFT skill for the user
     to edit and then save (POST /skills). id is None to mark it unsaved.
 
-    The planner returns a short Title-Case ``name`` (distinct from the
-    description) and a plan whose steps use the ``{ticker}`` placeholder. A
-    post-processing safety net then scrubs any concrete ticker symbols (from the
-    request's tickers list or ``$``-prefixed in the description) out of the name
-    and step descriptions, so the saved skill stays reusable. Capped at 8 steps."""
+    All the work lives in ``planner.propose_plan`` (invert-the-substitution): it
+    plans against a concrete example ticker, then swaps it back to ``{ticker}``,
+    returning a short Title-Case name and a reusable, ticker-agnostic plan. The
+    request's ``tickers`` are handed through so the caller's real symbols are
+    canonicalized/scrubbed too. Capped at 8 steps."""
     description = req.description.strip()
-    name, plan = propose_plan(description, max_subtasks=SKILL_MAX_SUBTASKS)
-
-    symbols = _collect_symbols(req.tickers, description)
-    if symbols:
-        name = _generalize(name, symbols)
-        plan = Plan(subtasks=[
-            Subtask(name=st.name, description=_generalize(st.description, symbols),
-                    depends_on=list(st.depends_on))
-            for st in plan.subtasks
-        ])
-
+    name, plan = propose_plan(description, tickers=req.tickers, max_subtasks=SKILL_MAX_SUBTASKS)
     draft = Skill(id=None, name=name or "New skill",
                   description=description, version=1, plan=plan)
     return draft.model_dump()

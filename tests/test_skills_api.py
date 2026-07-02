@@ -102,7 +102,7 @@ def test_propose_returns_valid_unsaved_draft(tmp_skills, patch_research, fake_an
 
 def test_propose_enforces_skill_cap(tmp_skills, patch_research, fake_anthropic, make_msg):
     many = {"name": "Big One", "subtasks": [
-        {"name": "reason", "description": f"step {i}", "depends_on": []} for i in range(20)]}
+        {"name": "earnings", "description": f"step {i}", "depends_on": []} for i in range(20)]}
     patch_research(fake_anthropic(create_fn=lambda kw: make_msg(json.dumps(many))))
 
     draft = client.post("/skills/propose", json={"description": "huge pipeline"}).json()
@@ -127,14 +127,15 @@ def test_propose_returns_short_name_distinct_from_description(
     assert draft["description"] == desc              # user's text becomes the description
 
 
-def test_propose_derives_name_when_model_omits_it(
+def test_propose_derives_name_from_tools_when_model_omits_it(
     tmp_skills, patch_research, fake_anthropic, make_msg,
 ):
-    # Model returns only subtasks — the route derives a Title-Case fallback name.
-    out = {"subtasks": [{"name": "technicals", "description": "chart {ticker}", "depends_on": []}]}
+    # Model returns only subtasks — the fallback name comes from the plan's TOOLS,
+    # never a truncated sentence.
+    out = {"subtasks": [{"name": "technicals", "description": "chart ACME", "depends_on": []}]}
     patch_research(fake_anthropic(create_fn=lambda kw: make_msg(json.dumps(out))))
     draft = client.post("/skills/propose", json={"description": "momentum screen"}).json()
-    assert draft["name"] == "Momentum Screen"
+    assert draft["name"] == "Technicals Review"
 
 
 def test_propose_generalizes_request_tickers(
@@ -190,3 +191,107 @@ def test_propose_then_render_for_msft_has_no_aapl(
     blob = json.dumps(rendered.model_dump())
     assert "AAPL" not in blob
     assert "MSFT" in blob
+
+
+# ============================================================
+# === PROPOSE — invert-the-substitution (adversarial) ===
+# ============================================================
+# These encode the degenerate shapes the REAL model actually returned (which the
+# earlier {ticker}-instruction mock never exercised): a concrete subject in every
+# step, a refusal ("no ticker provided") single-reason plan, a missing name, and
+# name == description. The pipeline must plan against a concrete example ticker
+# and recover deterministically.
+
+
+def test_propose_plans_against_example_ticker_and_inverts(
+    tmp_skills, patch_research, fake_anthropic, make_msg,
+):
+    seen = {}
+
+    def create_fn(kw):
+        seen["user"] = kw["messages"][0]["content"]
+        # A well-behaved model plans for the concrete example subject it was given.
+        return make_msg(json.dumps({"name": "Earnings And Options Review", "subtasks": [
+            {"name": "earnings", "description": "Fetch ACME earnings history and beat rate", "depends_on": []},
+            {"name": "options_flow", "description": "Assess ACME options flow into the print", "depends_on": []},
+            {"name": "reason", "description": "Weigh ACME setup and name the risk", "depends_on": ["earnings", "options_flow"]},
+        ]}))
+
+    patch_research(fake_anthropic(create_fn=create_fn))
+    draft = client.post(
+        "/skills/propose",
+        json={"description": "For $AAPL: earnings and options into the report", "tickers": ["AAPL"]},
+    ).json()
+
+    # (1) the model planned against ACME — never the user's real symbol.
+    assert "ACME" in seen["user"]
+    assert "AAPL" not in seen["user"]
+    # (2) deterministic inversion: ACME and the real symbol are gone, {ticker} is in.
+    steps = draft["plan"]["subtasks"]
+    joined = draft["name"] + " " + " ".join(s["description"] for s in steps)
+    assert "ACME" not in joined and "AAPL" not in joined
+    assert all("{ticker}" in s["description"] for s in steps)
+    assert draft["name"] == "Earnings And Options Review"
+
+
+def test_propose_retries_once_then_recovers(
+    tmp_skills, patch_research, fake_anthropic, make_msg,
+):
+    calls = {"n": 0}
+
+    def create_fn(kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Observed refusal shape: no name, single reason step "no ticker".
+            return make_msg(json.dumps({"subtasks": [
+                {"name": "reason", "description": "No ticker was provided, cannot proceed", "depends_on": []}]}))
+        # Retry returns a proper plan + clean name.
+        return make_msg(json.dumps({"name": "Earnings Setup Review", "subtasks": [
+            {"name": "earnings", "description": "Fetch ACME earnings history", "depends_on": []},
+            {"name": "reason", "description": "Assess ACME setup", "depends_on": ["earnings"]}]}))
+
+    patch_research(fake_anthropic(create_fn=create_fn))
+    draft = client.post("/skills/propose", json={"description": "earnings and options setup"}).json()
+
+    assert calls["n"] == 2                                    # retried exactly once
+    assert draft["name"] == "Earnings Setup Review"
+    assert any(s["name"] == "earnings" for s in draft["plan"]["subtasks"])
+    assert all("ACME" not in s["description"] for s in draft["plan"]["subtasks"])
+
+
+def test_propose_falls_back_to_tool_name_when_model_keeps_failing(
+    tmp_skills, patch_research, fake_anthropic, make_msg,
+):
+    # Model always echoes the description as the name (name == description). The
+    # plan is fine, so recovery = derive the name from the plan's tools.
+    desc = "look at earnings history and what options flow implies for the coming report"
+
+    def create_fn(kw):
+        return make_msg(json.dumps({"name": desc, "subtasks": [
+            {"name": "earnings", "description": "Fetch ACME earnings history", "depends_on": []},
+            {"name": "options_flow", "description": "Assess ACME options flow", "depends_on": []},
+            {"name": "reason", "description": "Synthesize ACME", "depends_on": ["earnings", "options_flow"]}]}))
+
+    patch_research(fake_anthropic(create_fn=create_fn))
+    draft = client.post("/skills/propose", json={"description": desc}).json()
+
+    assert draft["name"] == "Earnings + Options Flow Review"  # from tools, not the sentence
+    assert draft["name"] != desc and len(draft["name"]) <= 40
+    assert not desc.lower().startswith(draft["name"].lower())
+
+
+def test_propose_recovers_from_refusal_single_reason_plan(
+    tmp_skills, patch_research, fake_anthropic, make_msg,
+):
+    # Model returns ONLY the refusal every time — pipeline must not surface the
+    # refusal text as the name, and must produce a clean, short label.
+    def create_fn(kw):
+        return make_msg(json.dumps({"name": "No ticker was provided", "subtasks": [
+            {"name": "reason", "description": "No ticker was provided, cannot plan", "depends_on": []}]}))
+
+    patch_research(fake_anthropic(create_fn=create_fn))
+    draft = client.post("/skills/propose", json={"description": "earnings and news read"}).json()
+
+    assert "no ticker" not in draft["name"].lower()
+    assert draft["name"] != draft["description"]
+    assert 0 < len(draft["name"]) <= 40

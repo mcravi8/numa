@@ -15,7 +15,7 @@ import json
 import re
 
 from app.config import ANTHROPIC_CLIENT, RESEARCH_PLANNER_MODEL, logger
-from app.research.executor import ALLOWED_TOOLS, FETCH_TOOLS, REASON_TOOL
+from app.research.executor import ALLOWED_TOOLS, FETCH_TOOLS, REASON_TOOL, resolve_tool
 from app.research.schemas import Plan, Subtask
 
 # Cost guards (RESEARCH_PLAN.md): auto-mode plans ≤ 5 subtasks, skill plans ≤ 8.
@@ -57,17 +57,6 @@ def _cap_name(name: str) -> str:
         return name
     cut = name[:40].rsplit(" ", 1)[0]
     return (cut or name[:40]).strip()
-
-
-def _fallback_name(description: str) -> str:
-    """Derive a short Title-Case name from the description when the model gives
-    none (or on degrade) — first few words, title-cased, ≤40 chars."""
-    text = (description or "").strip()
-    if not text:
-        return "New Skill"
-    words = re.split(r"\s+", text)[:6]
-    name = _cap_name(" ".join(words).strip(" .,:;-").title())
-    return name or "New Skill"
 
 
 def _system_prompt() -> str:
@@ -131,79 +120,180 @@ def build_plan(objective, tickers=None, *, max_subtasks=AUTO_MAX_SUBTASKS, clien
 
 
 # ============================================================
-# === PROPOSE — draft a reusable skill (name + {ticker} plan) ===
+# === PROPOSE — draft a reusable skill (invert-the-substitution) ===
 # ============================================================
-# The skill door (RESEARCH_PLAN.md): one Claude call turns a one-sentence
-# description into BOTH a short label AND a ticker-agnostic pipeline. Two things
-# distinguish it from build_plan: it returns a Title-Case *name* (distinct from
-# the description), and every step description uses the literal {ticker}
-# placeholder so the saved skill runs against any symbol.
+# The skill door (RESEARCH_PLAN.md). Real models plan poorly against an abstract
+# {ticker} placeholder (they refuse — "no ticker provided" — or write concrete
+# symbols anyway). So we invert the problem: BEFORE the call we swap the user's
+# symbols for one concrete EXAMPLE_TICKER and tell the model plainly it is a
+# stand-in; AFTER the call we swap that injected token back to {ticker}. Because
+# WE chose the token, the substitution is deterministic — no guessing what the
+# model wrote. The name is validated (short label, not the sentence, no token
+# remnant), retried once on failure, and finally derived from the plan's tools.
 
-def _propose_system_prompt() -> str:
-    fetchers = ", ".join(sorted(FETCH_TOOLS))
-    return (
-        "You are the planner for a stock-research engine, drafting a REUSABLE "
-        "skill — a saved pipeline run later against ANY ticker. Return ONLY "
-        "minified JSON, no prose, no code fences, matching exactly:\n"
-        '{"name":"<short Title Case label, max 40 chars, e.g. Earnings Deep Dive>",'
-        '"subtasks":[{"name":"<tool>","description":"<what this step does>",'
-        '"depends_on":["<earlier subtask name>"]}]}\n\n'
-        'The "name" is a concise label for the skill: Title Case, at most 40 '
-        "characters, and DISTINCT from the user's sentence (summarize it, do not "
-        "echo it back).\n\n"
-        "Each subtask's \"name\" MUST be one of these tools:\n"
-        f"  fetch tools (pull data for the ticker): {fetchers}\n"
-        f"  \"{REASON_TOOL}\": analyze/compare the outputs of earlier subtasks.\n\n"
-        "CRITICAL: every step description MUST be ticker-agnostic. Write the "
-        "literal placeholder {ticker} wherever a symbol would appear (e.g. "
-        '"Fetch {ticker} earnings history"). NEVER write a concrete ticker '
-        "symbol like AAPL or $NVDA — the skill is reused across tickers.\n\n"
-        "Rules: subtask names unique — reuse a tool by suffixing a number "
-        "(reason, reason_2). depends_on lists earlier subtask names. Prefer the "
-        "fewest subtasks that answer the objective; end with a reason step that "
-        "synthesizes when the objective needs it."
-    )
+# The stand-in symbol: unambiguous, Title Case, and never a real MODULE_REGISTRY
+# input, so it can't collide with a fetched ticker.
+EXAMPLE_TICKER = "ACME"
+
+# Human labels for the tool-derived fallback name (keys are MODULE_REGISTRY /
+# macro tools). Anything unmapped falls back to a title-cased key.
+_TOOL_LABELS = {
+    "technicals": "Technicals", "financials": "Financials", "options_flow": "Options Flow",
+    "insider_activity": "Insider", "news_sentiment": "News", "peers": "Peers",
+    "earnings": "Earnings", "analyst_ratings": "Analyst Ratings", "company": "Company",
+    "quote": "Quote", "congressional_trades": "Congress", "dark_pool": "Dark Pool",
+    "gamma_exposure": "Gamma Exposure", "macro": "Macro",
+}
+
+_PROPOSE_CORRECTIVE = (
+    'Your previous JSON was rejected. Return {"name","subtasks"} exactly, where '
+    '"name" is a short Title Case label (<=40 chars) summarizing the goal — NOT '
+    "the request sentence and NOT containing " + EXAMPLE_TICKER + ' — and '
+    '"subtasks" contains at least one data-fetch tool step.'
+)
 
 
-def propose_plan(description, *, max_subtasks=SKILL_MAX_SUBTASKS, client=None):
-    """Propose a reusable skill from a one-sentence description (one Claude call).
+def _example_symbols(description, tickers) -> set:
+    """Real symbols the user referenced: the request's tickers plus any
+    ``$``-prefixed symbols in the description (e.g. ``$NVDA`` → ``NVDA``)."""
+    syms = {t.strip().upper() for t in (tickers or []) if t and t.strip()}
+    syms |= {m.upper() for m in re.findall(r"\$([A-Za-z]{1,6})", description or "")}
+    return syms
 
-    Returns ``(name, Plan)`` — a short Title-Case name distinct from the
-    description, and a plan whose step descriptions use the ``{ticker}``
-    placeholder. Degrades to ``(derived name, single reason step)`` on malformed
-    output or no key. Never raises."""
-    client = client or ANTHROPIC_CLIENT
-    description = (description or "").strip()
-    fallback = _fallback_name(description)
 
-    if not client.api_key:
-        return fallback, _degraded_plan(description)
+def _swap(text: str, symbols, target: str) -> str:
+    """Case-insensitively replace ``{ticker}`` and every symbol (bare or
+    ``$``-prefixed) with ``target``. Used both ways: description→EXAMPLE_TICKER
+    before the call, EXAMPLE_TICKER/symbols→{ticker} after."""
+    out = (text or "").replace("{ticker}", target)
+    for sym in symbols:
+        if sym:
+            out = re.sub(rf"\$?\b{re.escape(sym)}\b", target, out, flags=re.IGNORECASE)
+    return out
 
-    user_msg = (
-        f"Skill description: {description or '(none stated)'}\n"
+
+def _name_from_tools(plan: Plan) -> str:
+    """Fallback name derived from the plan's fetch tools — never a truncated
+    sentence (e.g. ``Earnings + Options Flow Review``)."""
+    labels = []
+    for st in plan.subtasks:
+        tool = resolve_tool(st.name)
+        if tool == REASON_TOOL:
+            continue
+        label = _TOOL_LABELS.get(tool, tool.replace("_", " ").title())
+        if label not in labels:
+            labels.append(label)
+    while labels and len(" + ".join(labels) + " Review") > 40:
+        labels.pop()
+    return (" + ".join(labels) + " Review") if labels else "Research Skill"
+
+
+def _name_ok(name: str, *sentences) -> bool:
+    """Accept a proposed name only if it is a short label: non-empty, ≤40 chars,
+    free of the example/placeholder token, and not an echo (prefix) of any given
+    sentence (the description or the canonicalized request)."""
+    name = (name or "").strip()
+    if not name or len(name) > 40:
+        return False
+    low = name.lower()
+    if EXAMPLE_TICKER.lower() in low or "{ticker}" in low:
+        return False
+    return not any((s or "").strip().lower().startswith(low) for s in sentences if (s or "").strip())
+
+
+def _has_fetch(plan) -> bool:
+    """A usable skill plan pulls data — at least one non-reason step."""
+    return bool(plan) and any(resolve_tool(st.name) != REASON_TOOL for st in plan.subtasks)
+
+
+def _propose_once(client, canonical, max_subtasks, corrective=None):
+    """One planner call → ``(raw_name, Plan)``; ``(None, None)`` on parse failure.
+    ``canonical`` already has the user's symbols swapped for EXAMPLE_TICKER."""
+    user = (
+        f"Plan a reusable research skill for the example ticker {EXAMPLE_TICKER}.\n"
+        f"User request (about {EXAMPLE_TICKER}): {canonical or '(none stated)'}\n"
         f"Allowed tools: {', '.join(ALLOWED_TOOLS)}\n"
         f"Return at most {max_subtasks} subtasks."
     )
+    if corrective:
+        user += f"\n\n{corrective}"
     try:
         resp = client.messages.create(
             model=RESEARCH_PLANNER_MODEL,
             max_tokens=800,
             system=_propose_system_prompt(),
-            messages=[{"role": "user", "content": user_msg}],
+            messages=[{"role": "user", "content": user}],
         )
         raw = resp.content[0].text.strip()
         if raw.startswith("```"):
             raw = raw.split("```")[1].lstrip("json").strip()
         parsed = json.loads(raw)
     except Exception as e:
-        logger.debug("propose parse failed, degrading: %s", e)
-        return fallback, _degraded_plan(description)
-
+        logger.debug("propose parse failed: %s", e)
+        return None, None
     if not isinstance(parsed, dict):
-        return fallback, _degraded_plan(description)
+        return None, None
+    name = _cap_name(str(parsed.get("name", "")).strip())
+    plan = Plan(subtasks=_clean_subtasks(parsed.get("subtasks", []), max_subtasks))
+    return name, plan
 
-    name = _cap_name(str(parsed.get("name", "")).strip()) or fallback
-    cleaned = _clean_subtasks(parsed.get("subtasks", []), max_subtasks)
-    if not cleaned:
-        return name, _degraded_plan(description)
-    return name, Plan(subtasks=cleaned)
+
+def _propose_system_prompt() -> str:
+    fetchers = ", ".join(sorted(FETCH_TOOLS))
+    return (
+        "You are the planner for a stock-research engine, drafting a REUSABLE "
+        f"skill. You are given ONE example ticker, {EXAMPLE_TICKER} — a stand-in "
+        "that the app replaces with the user's real symbol at run time. Plan as "
+        f"if analyzing {EXAMPLE_TICKER}; write {EXAMPLE_TICKER} wherever a symbol "
+        "belongs (do not invent other tickers).\n\n"
+        "Return ONLY minified JSON, no prose, no code fences, matching exactly:\n"
+        '{"name":"<short Title Case label>","subtasks":[{"name":"<tool>",'
+        '"description":"<what this step does>","depends_on":["<earlier name>"]}]}\n\n'
+        '"name": a concise Title Case label for the skill, at most 40 characters, '
+        'summarizing the goal (e.g. "Earnings Deep Dive"). It must NOT be the '
+        f"user's sentence and must NOT contain {EXAMPLE_TICKER}.\n\n"
+        "Each subtask's \"name\" MUST be one of these tools:\n"
+        f"  fetch tools (pull data for {EXAMPLE_TICKER}): {fetchers}\n"
+        f"  \"{REASON_TOOL}\": analyze/compare the outputs of earlier subtasks.\n\n"
+        "Rules: subtask names unique — reuse a tool by suffixing a number "
+        "(reason, reason_2). depends_on lists earlier subtask names. Include at "
+        "least one fetch tool. Prefer the fewest subtasks that answer the goal; "
+        "end with a reason step that synthesizes when needed."
+    )
+
+
+def propose_plan(description, tickers=None, *, max_subtasks=SKILL_MAX_SUBTASKS, client=None):
+    """Draft a reusable skill from a one-sentence description (invert-the-
+    substitution — see the section banner).
+
+    Returns ``(name, Plan)``: a short Title-Case name (validated, retried once,
+    else derived from the plan's tools) and a ticker-agnostic plan whose step
+    descriptions use ``{ticker}``. Never raises."""
+    client = client or ANTHROPIC_CLIENT
+    description = (description or "").strip()
+    symbols = _example_symbols(description, tickers)
+    canonical = _swap(description, symbols, EXAMPLE_TICKER)  # (1) plan against ACME
+
+    name, plan = "", None
+    if client.api_key:
+        name, plan = _propose_once(client, canonical, max_subtasks)
+        if not (_name_ok(name, description, canonical) and _has_fetch(plan)):
+            name, plan = _propose_once(client, canonical, max_subtasks, corrective=_PROPOSE_CORRECTIVE)
+
+    # (3) ensure a usable plan, and a clean name — derived from tools when the
+    # model's name is bad OR its plan is degenerate (a refusal we can't trust).
+    if not (plan and plan.subtasks):
+        plan = _degraded_plan(canonical)
+    if not _name_ok(name, description, canonical) or not _has_fetch(plan):
+        name = _name_from_tools(plan)
+
+    # (2) invert: the injected EXAMPLE_TICKER (and, as a second net, any real
+    # symbol the model echoed) → the {ticker} placeholder. Deterministic.
+    invert = {EXAMPLE_TICKER} | symbols
+    name = _swap(name, invert, "{ticker}")
+    plan = Plan(subtasks=[
+        Subtask(name=st.name, description=_swap(st.description, invert, "{ticker}"),
+                depends_on=list(st.depends_on))
+        for st in plan.subtasks
+    ])
+    return name, plan
