@@ -242,3 +242,47 @@ def test_executor_degraded_single_subtask_plan(fake_stock, recorded_info):
     assert events[-1]["type"] == "complete"
     completed = [e for e in events if e["type"] == "subtask_completed"]
     assert len(completed) == 1 and completed[0]["data"]["reasoning"] == "reasoned analysis text"
+
+
+# ============================================================
+# === {ticker} RESOLVER (schema + run-time) ===
+# ============================================================
+
+def test_render_plan_substitutes_ticker_in_descriptions():
+    from app.research.schemas import render_plan
+    plan = Plan(subtasks=[
+        Subtask(name="earnings", description="Fetch {ticker} earnings", depends_on=[]),
+        Subtask(name="reason", description="Assess {ticker} vs peers", depends_on=["earnings"]),
+    ])
+    r = render_plan(plan, "msft")  # lower-case in → upper-case out
+    assert r.subtasks[0].description == "Fetch MSFT earnings"
+    assert r.subtasks[1].description == "Assess MSFT vs peers"
+    assert all("{ticker}" not in s.description for s in r.subtasks)
+    # names/depends_on survive rendering untouched
+    assert r.subtasks[1].depends_on == ["earnings"]
+
+
+def test_executor_renders_ticker_in_reason_prompt_and_events(fake_stock, recorded_info):
+    # A {ticker}-templated plan must reach the reason Claude call and the emitted
+    # events with the concrete symbol — not the literal placeholder.
+    plan = Plan(subtasks=[
+        Subtask(name="technicals", description="Fetch {ticker} technicals", depends_on=[]),
+        Subtask(name="reason", description="Assess {ticker} momentum", depends_on=["technicals"]),
+    ])
+    client = FakeAnthropic(create_fn=lambda kw: _content("ok"))
+    events = _drain(run_plan(
+        plan, ["AAPL"],
+        client=client,
+        stock_factory=lambda t: (fake_stock, recorded_info),
+    ))
+
+    # The reason step's Claude call saw the rendered description.
+    reason_user = client.messages.create_calls[-1]["messages"][0]["content"]
+    assert "Assess AAPL momentum" in reason_user
+    assert "{ticker}" not in reason_user
+
+    # The emitted plan + subtask_started descriptions are rendered too.
+    started = next(e for e in events if e["type"] == "subtask_started" and e["name"] == "reason")
+    assert started["description"] == "Assess AAPL momentum"
+    plan_ev = next(e for e in events if e["type"] == "plan")
+    assert "{ticker}" not in json.dumps(plan_ev["plan"])

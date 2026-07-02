@@ -53,6 +53,13 @@ function rskUniqueName(base, taken){
   if(taken.indexOf(base)<0) return base;
   let i=2; while(taken.indexOf(base+'_'+i)>=0) i++; return base+'_'+i;
 }
+// Trim a name to <=max chars on a word boundary (never a hard mid-word slice).
+function rskTrimName(s, max){
+  s=String(s||'').trim();
+  if(s.length<=max) return s;
+  const cut=s.slice(0,max), sp=cut.lastIndexOf(' ');
+  return (sp>Math.floor(max*0.5)?cut.slice(0,sp):cut).trim();
+}
 // Step names must be unique: they key the run's progress rows AND the backend's
 // outputs/depends_on (see executor). Rename later duplicates in place.
 function rskDedupeNames(subs){
@@ -168,11 +175,16 @@ async function rskProposeGo(){
   try{
     const r=await fetch(`${API_BASE}/skills/propose`,{
       method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({description:desc})});
+      // Send the current ticker so the backend's safety net can scrub it out of
+      // the reusable draft (name + step descriptions).
+      body:JSON.stringify({description:desc, tickers:[rskCurrentTicker()]})});
     if(!r.ok) throw new Error('propose failed');
     const draft=await r.json();
+    // The backend returns a short Title-Case name; fall back to a word-boundary
+    // trim of the description (never a hard mid-word slice).
+    const name=(draft.name&&draft.name.trim())||rskTrimName(desc,40);
     RESEARCH.editing=rskNormalizeSkill({
-      id:null, name:draft.name||desc.slice(0,60), description:draft.description||desc,
+      id:null, name, description:draft.description||desc,
       version:1, plan:draft.plan});
     RESEARCH.view='edit';
     renderSection('skills');
@@ -198,7 +210,7 @@ function rskEditorHTML(){
   return `${rskHead(isNew?'New skill':'Edit skill', isNew?'Draft the pipeline, then save it.':'Tweak the pipeline. Saving bumps the version.', true)}
     <div class="rsk-panel">
       <label class="rsk-label">Name</label>
-      <input id="rskName" class="rsk-input" value="${rskAttr(ed.name)}" placeholder="Skill name" maxlength="80">
+      <input id="rskName" class="rsk-input" value="${rskAttr(ed.name)}" placeholder="Skill name" maxlength="48">
       <label class="rsk-label">Description</label>
       <textarea id="rskDesc" class="rsk-textarea" rows="2" placeholder="What this skill answers. Use {ticker} where the symbol should go.">${rskEsc(ed.description)}</textarea>
       <div class="rsk-plan-head">

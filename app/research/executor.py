@@ -35,7 +35,7 @@ from app.config import (
     RESEARCH_SYNTHESIS_MODEL,
     logger,
 )
-from app.research.schemas import Plan
+from app.research.schemas import Plan, render_plan
 from app.routes.analyze import MODULE_REGISTRY, Ctx
 from app.routes.macro import get_macro
 from app.utils import _json_safe
@@ -136,6 +136,12 @@ async def run_plan(
     client = client or ANTHROPIC_CLIENT
     stock_factory = stock_factory or _default_stock_factory
     tickers = [t.upper().strip() for t in (tickers or []) if t and t.strip()]
+
+    # Run-time resolver: fill {ticker} in step descriptions so the reason /
+    # synthesis prompts (and the emitted plan) carry the concrete symbol, not the
+    # template placeholder — independent of any client-side substitution.
+    if tickers:
+        plan = render_plan(plan, ", ".join(tickers))
 
     yield {"type": "plan", "objective": objective, "tickers": tickers,
            "plan": plan.model_dump()}
