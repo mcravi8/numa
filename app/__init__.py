@@ -17,15 +17,18 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.config import STATIC_DIR
+from app.config import CORS_ORIGINS, STATIC_DIR
 from app.routes import ai, analyze, frontend, macro, notes, quotes, search
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Research Terminal")
+    # Restrict CORS to the localhost origins the SPA is served from (override
+    # via CORS_ORIGINS). No allow_credentials: the app uses no cookies, so
+    # credentialed cross-origin requests are neither needed nor permitted.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=CORS_ORIGINS,
         allow_methods=["*"],
         allow_headers=["*"],
     )

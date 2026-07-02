@@ -45,6 +45,18 @@ FRED_KEY = os.getenv("FRED_API_KEY", "")
 UNUSUAL_WHALES_API_KEY = os.getenv("UNUSUAL_WHALES_API_KEY", "")
 POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "")
 
+# --- CORS — allowed browser origins for cross-origin fetch/XHR -----------
+# The SPA is served same-origin by FastAPI itself, so the default list
+# restricts nothing legitimate. Override with a comma-separated CORS_ORIGINS
+# env var to serve the frontend from somewhere else.
+CORS_ORIGINS = [
+    o.strip()
+    for o in os.getenv(
+        "CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000"
+    ).split(",")
+    if o.strip()
+]
+
 # --- SEC EDGAR — no key, just an identifying User-Agent header -----------
 SEC_HEADERS = {"User-Agent": "ResearchTerminal demo@researchterm.com"}
 
