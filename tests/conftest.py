@@ -17,6 +17,7 @@ import pickle
 import socket
 from collections import namedtuple
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -147,3 +148,87 @@ def fake_stock():
 def recorded_info():
     """The recorded AAPL .info dict (what the endpoints fetch once and hand down)."""
     return _load_json("info.json")
+
+
+# ============================================================
+# === MOCKED ANTHROPIC CLIENT — offline research tests ===
+# ============================================================
+# The research engine must be testable with NO live Claude call (RESEARCH_PLAN.md).
+# FakeAnthropic mimics the two surfaces the engine touches: messages.create(...)
+# (planner + reason steps) and messages.stream(...) (synthesis). Shared here so
+# both the engine unit tests and the HTTP smoke tests can use it.
+
+
+def fake_msg(text):
+    """Mimic client.messages.create(...) → .content[0].text."""
+    return SimpleNamespace(content=[SimpleNamespace(text=text)])
+
+
+class _FakeStream:
+    def __init__(self, tokens):
+        self._tokens = list(tokens)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    @property
+    def text_stream(self):
+        return iter(self._tokens)
+
+    def get_final_message(self):
+        return SimpleNamespace(usage=SimpleNamespace(input_tokens=1, output_tokens=1))
+
+
+class _FakeMessages:
+    def __init__(self, create_fn, stream_tokens):
+        self._create_fn = create_fn
+        self._stream_tokens = stream_tokens
+
+    def create(self, **kwargs):
+        return self._create_fn(kwargs)
+
+    def stream(self, **kwargs):
+        return _FakeStream(self._stream_tokens)
+
+
+class FakeAnthropic:
+    """Drop-in stand-in for the shared Anthropic client (no network)."""
+
+    def __init__(self, create_fn=None, stream_tokens=("Bottom line: ", "hold."), api_key="test-key"):
+        self.api_key = api_key
+        self.messages = _FakeMessages(create_fn or (lambda kw: fake_msg("reasoned analysis")), stream_tokens)
+
+
+@pytest.fixture
+def fake_anthropic():
+    """The FakeAnthropic class (build one with a create_fn / stream_tokens)."""
+    return FakeAnthropic
+
+
+@pytest.fixture
+def make_msg():
+    """The helper that wraps text as a client.messages.create(...) return."""
+    return fake_msg
+
+
+@pytest.fixture
+def patch_research(monkeypatch, fake_stock, recorded_info):
+    """Wire the research engine offline: swap the planner/executor Anthropic
+    client for a FakeAnthropic and its live yf.Ticker fetch for the recorded
+    FakeTicker. Returns an ``apply(client)`` callable the test drives."""
+    import app.research.executor as executor_mod
+    import app.research.planner as planner_mod
+
+    def _apply(client):
+        monkeypatch.setattr(planner_mod, "ANTHROPIC_CLIENT", client)
+        monkeypatch.setattr(executor_mod, "ANTHROPIC_CLIENT", client)
+        monkeypatch.setattr(
+            executor_mod, "_default_stock_factory",
+            lambda ticker: (fake_stock, recorded_info),
+        )
+        return client
+
+    return _apply

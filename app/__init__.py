@@ -20,6 +20,12 @@ from fastapi.staticfiles import StaticFiles
 from app.config import CORS_ORIGINS, STATIC_DIR
 from app.routes import ai, analyze, frontend, macro, notes, quotes, search
 
+# Aliased so importing the routes module does NOT rebind the ``app.research``
+# attribute — that name belongs to the app/research/ engine package, and a plain
+# ``from app.routes import research`` here would shadow it (breaking
+# ``import app.research.executor``).
+from app.routes import research as research_routes
+
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Research Terminal")
@@ -40,6 +46,7 @@ def create_app() -> FastAPI:
     app.include_router(notes.router)
     app.include_router(ai.router)
     app.include_router(macro.router)
+    app.include_router(research_routes.router)
     app.include_router(search.router)
 
     # ── STATIC FILES (manifest, icons, sw.js) ──────────────────
