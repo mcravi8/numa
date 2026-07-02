@@ -1,7 +1,7 @@
 // sw.js — Research Terminal Service Worker
 // Bump CACHE_NAME on any change to this file to force the new SW to install
 // and purge the previous cache (see the activate handler).
-const CACHE_NAME = 'research-terminal-v37';
+const CACHE_NAME = 'research-terminal-v38';
 
 // Files to cache on install (the app shell)
 const SHELL_FILES = [
@@ -10,7 +10,12 @@ const SHELL_FILES = [
   '/icon-192.png',
   '/icon-512.png',
   '/static/css/app.css',
-  '/static/js/app.js',
+  '/static/js/01-state-helpers.js',
+  '/static/js/02-macro.js',
+  '/static/js/03-render.js',
+  '/static/js/04-charts.js',
+  '/static/js/05-numa.js',
+  '/static/js/06-app.js',
 ];
 
 // Install: cache the app shell
