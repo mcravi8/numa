@@ -673,6 +673,16 @@ function showTab(t){
   document.body.classList.remove('has-ticker');   // reset; renderCompanyBar re-adds it only for a loaded ticker
   document.getElementById('tickerInput').value=t.ticker||'';
   DATA=t.data; CURRENT=t.section||'overview'; numaHistory=t.numaHistory||[];
+  // Bind the bottom-right insights bubble to THIS tab. On a blank/new tab DATA is
+  // null, so updateNumaEdge() hides it — no more stale count from another ticker.
+  // If the popover is open, re-point it at the current tab (or close it on a blank tab)
+  // so you never see another ticker's insights in an empty chat.
+  updateNumaEdge();
+  const _np=document.getElementById('numaPop');
+  if(_np&&_np.classList.contains('show')){
+    if(DATA&&DATA.ticker){ resetPopMini(); refreshInsights(); }
+    else toggleNumaPop(false);
+  }
   renderTabs();
   if(t.loading){ renderLoading(t.ticker); return; }
   endLoading();

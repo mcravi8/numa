@@ -245,7 +245,8 @@ function toggleNumaPop(open){
    chat", which lifts the whole thread into the real sidebar (promotePopToChat). */
 let POP_HISTORY=[];        // [{role, content, label?}] — ephemeral, popover-only
 let _popStreaming=false;
-function scrollPop(){ const s=document.querySelector('.numa-pop-scroll'); if(s) s.scrollTop=s.scrollHeight; }
+let _popScrollRAF=0;
+function scrollPop(){ if(_popScrollRAF) return; _popScrollRAF=requestAnimationFrame(()=>{ _popScrollRAF=0; const s=document.querySelector('.numa-pop-scroll'); if(s) s.scrollTop=s.scrollHeight; }); }
 // Render a data chart inside a popover turn — same chart engine (topicChartFor/renderChart)
 // the sidebar uses. The popover scrolls/grows (max-height + overflow) so charts fit.
 function appendPopChart(turn, topic){
@@ -370,7 +371,13 @@ function ensureSpacer(){ if(!_spacer){_spacer=document.createElement('div');_spa
 function fitSpacer(){ const sp=ensureSpacer(); sp.style.height='0px';
   if(_pinNode&&thread.contains(_pinNode)){ const below=thread.scrollHeight - _pinNode.offsetTop; sp.style.height=Math.max(0, thread.clientHeight - below - 14)+'px'; } }
 function pinToTop(node){ if(node&&thread.contains(node)) thread.scrollTop=Math.max(0, node.offsetTop - 14); }
-function scrollThread(){ if(_pinNode&&thread.contains(_pinNode)){ fitSpacer(); pinToTop(_pinNode); } else { thread.scrollTop=thread.scrollHeight; } }
+let _scrollRAF=0;
+function _applyScrollThread(){ if(_pinNode&&thread.contains(_pinNode)){ fitSpacer(); pinToTop(_pinNode); } else { thread.scrollTop=thread.scrollHeight; } }
+// Coalesce scroll updates to at most one per animation frame. ui.preview() fires on
+// EVERY streamed token; doing a synchronous reflow (fitSpacer reads scrollHeight/
+// offsetTop, pinToTop writes scrollTop) on each token is what made the thread feel
+// laggy while Numa was typing. rAF collapses the token burst into one scroll/frame.
+function scrollThread(){ if(_scrollRAF) return; _scrollRAF=requestAnimationFrame(()=>{ _scrollRAF=0; _applyScrollThread(); }); }
 function pinLatest(node){ _pinNode=node; ensureSpacer(); fitSpacer(); pinToTop(node); }
 // Reusable vest+"Numa" lockup. Pass a size class (e.g. 'numa-lockup-lg').
 function numaLockupHTML(cls){ return `<span class="numa-lockup ${cls||''}"><span class="nl-mark">${VEST}</span><span class="nl-word">Numa</span></span>`; }
