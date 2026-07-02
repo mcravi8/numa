@@ -63,6 +63,13 @@ SEC_HEADERS = {"User-Agent": "ResearchTerminal demo@researchterm.com"}
 # --- Anthropic / Claude — one shared client, built once from the key -----
 ANTHROPIC_CLIENT = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
+# --- Research engine — model names in one place (not hard-coded at call sites).
+# The plan/reason/synthesis steps of app/research each read their model from the
+# matching constant here so a model swap is a one-line edit (see RESEARCH_PLAN.md).
+RESEARCH_PLANNER_MODEL = os.getenv("RESEARCH_PLANNER_MODEL", "claude-sonnet-4-6")
+RESEARCH_REASON_MODEL = os.getenv("RESEARCH_REASON_MODEL", "claude-sonnet-4-6")
+RESEARCH_SYNTHESIS_MODEL = os.getenv("RESEARCH_SYNTHESIS_MODEL", "claude-sonnet-4-6")
+
 # --- Finnhub — one shared client, or None when no key is configured ------
 # (news and peers use this instead of rebuilding a client on every call).
 # Pin an explicit 10-second timeout: news and peers are fetchers, and
