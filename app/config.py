@@ -100,3 +100,6 @@ BASE_DIR = pathlib.Path(__file__).parent.parent
 STATIC_DIR = BASE_DIR / "static"
 # notes.json stays at the repo root (git-ignored personal data), not in static/.
 NOTES_FILE = BASE_DIR / "notes.json"
+# skills.json — saved research pipelines, same git-ignored-personal-data pattern
+# as notes.json (read/written whole-file by the skills routes).
+SKILLS_FILE = BASE_DIR / "skills.json"

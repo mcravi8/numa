@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.config import CORS_ORIGINS, STATIC_DIR
-from app.routes import ai, analyze, frontend, macro, notes, quotes, search
+from app.routes import ai, analyze, frontend, macro, notes, quotes, search, skills
 
 # Aliased so importing the routes module does NOT rebind the ``app.research``
 # attribute — that name belongs to the app/research/ engine package, and a plain
@@ -47,6 +47,7 @@ def create_app() -> FastAPI:
     app.include_router(ai.router)
     app.include_router(macro.router)
     app.include_router(research_routes.router)
+    app.include_router(skills.router)
     app.include_router(search.router)
 
     # ── STATIC FILES (manifest, icons, sw.js) ──────────────────
