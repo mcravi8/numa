@@ -10,7 +10,9 @@ For any ticker it assembles a 360° view — quote, financials, technicals (SMA/
 
 The backend has been refactored from a single `main.py` into an `app/` package.
 `main.py` is now a thin entrypoint (`from app import create_app; app = create_app()`)
-so `uvicorn main:app` still works. The frontend/PWA assets live in `static/`.
+so `uvicorn main:app` still works. The frontend has likewise been split: `index.html`
+is now a thin shell loading `static/css/app.css` and six ordered classic scripts in
+`static/js/` (they share global scope by design — do not convert them to ES modules).
 
 ```
 .
@@ -33,9 +35,12 @@ so `uvicorn main:app` still works. The frontend/PWA assets live in `static/`.
 │       ├── options.py  insider.py  news.py  peers.py
 │       ├── earnings.py  ratings.py  congress.py
 │       └── premium_demo.py #   dark-pool / GEX / options-flow demo data
-├── static/                 # index.html, manifest.json, sw.js, icons, generate_icons.py
+├── static/                 # index.html (shell), manifest.json, sw.js, icons
+│   ├── css/app.css         #   all styles
+│   └── js/                 #   01-state-helpers … 06-app (ordered classic scripts)
+├── scripts/                # record_fixtures.py — re-record test fixtures (AAPL snapshot)
 ├── docs/                   # module-pattern.md, REFACTOR_PLAN.md, NIGHT_RUN_REPORT.md
-└── tests/                  # pytest smoke suite
+└── tests/                  # smoke tests + offline per-module tests (recorded fixtures)
 ```
 
 Both `/analyze/{ticker}` and its streaming variant are driven by a single ordered
@@ -59,6 +64,7 @@ Open http://localhost:8000. Install as a PWA from Chrome's address bar if you wa
 | yfinance | none | quotes, financials, technicals, options, earnings, ratings |
 | SEC EDGAR | none | insider filings |
 | Finnhub | free | news, peers (falls back to yfinance) |
+| FRED | free | macro dashboard: rates, labor, inflation, growth |
 | Anthropic | required for AI | Numa chat, synthesis, news sentiment scoring |
 | Quiver Quantitative | premium | live congressional trades |
 | Unusual Whales / Polygon | premium | options flow, dark pool, GEX, real-time quotes (demo data without keys) |
