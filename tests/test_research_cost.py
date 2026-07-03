@@ -176,7 +176,11 @@ def test_estimate_endpoint():
 # === EXECUTOR ROUTES CALLS TO THE RIGHT MODELS ===
 # ============================================================
 
-def test_executor_routes_fetch_reason_synthesis(fake_anthropic, make_msg, fake_stock, recorded_info):
+def test_executor_routes_fetch_reason_synthesis(monkeypatch, fake_anthropic, make_msg, fake_stock, recorded_info):
+    # Scope to routing: disable the (separately-tested) validator so create calls
+    # are exactly the reason steps.
+    from app.research import validator
+    monkeypatch.setattr(validator, "NUMA_VALIDATOR", False)
     plan = Plan(subtasks=[
         Subtask(name="technicals", description="pull technicals", depends_on=[]),
         Subtask(name="reason", description="assess", depends_on=["technicals"]),

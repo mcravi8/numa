@@ -169,6 +169,19 @@ function rskCostPanelHTML(){
     </div></div>`;
 }
 
+/* ---- Memo quality badge (from the executor's 'validation' event): the
+   validator's score out of 10, plus a "revised" tag when a low score triggered
+   the single synthesis retry. Shared by the Skills run view and the chat. ---- */
+function rskBadgeHTML(v){
+  if(!v || typeof v.score!=='number') return '';
+  const s=v.score.toFixed(1);
+  const cls=v.retried?'revised':(v.score>=8?'good':'ok');
+  const tip=v.retried
+    ? `Numa graded the first draft ${s}/10 and revised it once`
+    : `Numa graded this memo ${s}/10`;
+  return `<span class="rsk-badge ${cls}" title="${rskAttr(tip)}">Quality ${s}/10${v.retried?' · revised':''}</span>`;
+}
+
 /* ============ CLARIFIER (shared by both doors) ============
    The backend gate (app/research/clarifier.py) may return up to 3 questions
    before planning. Both doors render the SAME UI: question text, suggestion
@@ -548,7 +561,7 @@ function rskRunHTML(){
         <span id="rskRunPhase" class="rsk-hint">${done?'Complete':'Streaming…'}</span></div>
       <div class="rsk-run-steps" id="rskRunRows"></div>
       <div class="rsk-memo-wrap">
-        <div class="rsk-memo-head"><span class="rsk-label">Memo</span></div>
+        <div class="rsk-memo-head"><span class="rsk-label">Memo</span><span id="rskMemoBadge" class="rsk-badge-slot">${run.validation?rskBadgeHTML(run.validation):''}</span></div>
         <div class="rsk-memo" id="rskMemo">${done?renderMD(run.memoRaw):'<span class="rsk-hint">Waiting for synthesis…</span>'}</div>
       </div>
       <div class="rsk-actions rsk-actions-foot" id="rskRunFoot" ${done?'':'style="display:none;"'}>
@@ -622,6 +635,9 @@ function rskHandleEvent(ev){
     if(err){ const sub=row.querySelector('.rsk-prow-sub'); if(sub) sub.textContent='Error: '+err; }
   } else if(ev.type==='synthesis_token'){
     run.memoRaw+=ev.token||''; run._memoDirty=true; requestAnimationFrame(rskFlushMemo);
+  } else if(ev.type==='validation'){
+    run.validation=ev;   // quality score (+ retried) → memo badge
+    const b=document.getElementById('rskMemoBadge'); if(b) b.innerHTML=rskBadgeHTML(ev);
   } else if(ev.type==='complete'){
     if(typeof ev.synthesis==='string'&&ev.synthesis) run.memoRaw=ev.synthesis;
     run._memoDirty=true; rskFlushMemo();
@@ -873,7 +889,8 @@ async function numaRunResearchInChat(question, decision, opts){
   const secs = t0 ? ((performance.now()-t0)/1000).toFixed(1) : '';
   const mm = node.querySelector('.mmeta');
   if(mm) mm.innerHTML = 'research · '+(((u.input_tokens||0)+(u.output_tokens||0))).toLocaleString()+
-    ' tok <span class="cost">$'+(u.cost_usd||0).toFixed(3)+'</span>'+(secs?' <span>'+secs+'s</span>':'');
+    ' tok <span class="cost">$'+(u.cost_usd||0).toFixed(3)+'</span>'+(secs?' <span>'+secs+'s</span>':'')+
+    (run.validation?(' '+rskBadgeHTML(run.validation)):'');
   numaAddSaveSkillButton(node, question, decision);
   if(typeof scrollThread==='function') scrollThread();
 }
@@ -898,6 +915,8 @@ function numaHandleResearchEvent(ev, rows, memoEl, run){
   } else if(ev.type==='complete'){
     if(typeof ev.synthesis==='string'&&ev.synthesis) run.memoRaw=ev.synthesis;
     run._dirty=true; numaFlushChatMemo(memoEl, run);
+  } else if(ev.type==='validation'){
+    run.validation=ev;   // quality score (+ retried) → shown in the meta line
   } else if(ev.type==='usage'){
     run.usage=ev;
   } else if(ev.type==='error'){

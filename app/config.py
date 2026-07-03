@@ -74,6 +74,9 @@ RESEARCH_CLASSIFIER_MODEL = os.getenv("RESEARCH_CLASSIFIER_MODEL", "claude-haiku
 # The clarifier gate (app/research/clarifier.py) is the same Haiku-class tier: a
 # single cheap call, hard-biased toward asking nothing.
 RESEARCH_CLARIFIER_MODEL = os.getenv("RESEARCH_CLARIFIER_MODEL", "claude-haiku-4-5-20251001")
+# The output validator (app/research/validator.py) scores the finished memo — a
+# Sonnet-class judgement, weightier than the Haiku gates.
+RESEARCH_VALIDATOR_MODEL = os.getenv("RESEARCH_VALIDATOR_MODEL", "claude-sonnet-4-6")
 
 # --- Chat auto-research kill-switch --------------------------------------
 # When off, the /numa chat never deploys an auto-plan — every question is
@@ -87,6 +90,13 @@ NUMA_AUTO_RESEARCH = os.getenv("NUMA_AUTO_RESEARCH", "1").strip().lower() not in
 # clarifying question — planning proceeds straight from the objective. Set
 # NUMA_CLARIFIER=0 to force silent (never-ask) behaviour.
 NUMA_CLARIFIER = os.getenv("NUMA_CLARIFIER", "1").strip().lower() not in (
+    "0", "false", "no", "off", "",
+)
+
+# --- Validator kill-switch -----------------------------------------------
+# When off, the executor skips scoring the synthesized memo entirely — no
+# validator call, no retry, no quality badge. Set NUMA_VALIDATOR=0 to disable.
+NUMA_VALIDATOR = os.getenv("NUMA_VALIDATOR", "1").strip().lower() not in (
     "0", "false", "no", "off", "",
 )
 

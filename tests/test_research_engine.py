@@ -270,9 +270,12 @@ def test_render_plan_substitutes_ticker_in_descriptions():
     assert r.subtasks[1].depends_on == ["earnings"]
 
 
-def test_executor_renders_ticker_in_reason_prompt_and_events(fake_stock, recorded_info):
+def test_executor_renders_ticker_in_reason_prompt_and_events(monkeypatch, fake_stock, recorded_info):
     # A {ticker}-templated plan must reach the reason Claude call and the emitted
-    # events with the concrete symbol — not the literal placeholder.
+    # events with the concrete symbol — not the literal placeholder. Disable the
+    # (separately-tested) validator so the last create call is the reason step.
+    from app.research import validator
+    monkeypatch.setattr(validator, "NUMA_VALIDATOR", False)
     plan = Plan(subtasks=[
         Subtask(name="technicals", description="Fetch {ticker} technicals", depends_on=[]),
         Subtask(name="reason", description="Assess {ticker} momentum", depends_on=["technicals"]),
@@ -300,10 +303,14 @@ def test_executor_renders_ticker_in_reason_prompt_and_events(fake_stock, recorde
 # === USAGE ACCUMULATION ===
 # ============================================================
 
-def test_run_plan_emits_usage_event_summing_all_calls(fake_stock, recorded_info):
+def test_run_plan_emits_usage_event_summing_all_calls(monkeypatch, fake_stock, recorded_info):
     from app.config import estimate_cost_usd
+    from app.research import validator
     from app.research.executor import UsageAccumulator
 
+    # Scope to planner+reason+synthesis summing: disable the validator so it adds
+    # no extra call (its own token folding is covered in test_research_validator).
+    monkeypatch.setattr(validator, "NUMA_VALIDATOR", False)
     plan = Plan(subtasks=[
         Subtask(name="technicals", description="pull technicals", depends_on=[]),
         Subtask(name="reason", description="assess", depends_on=["technicals"]),

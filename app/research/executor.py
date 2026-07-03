@@ -31,9 +31,11 @@ import re
 
 from app.config import (
     ANTHROPIC_CLIENT,
+    RESEARCH_VALIDATOR_MODEL,
     estimate_cost_usd,
     logger,
 )
+from app.research import validator
 from app.research.router import route_model
 from app.research.schemas import (
     KIND_FETCH,
@@ -239,25 +241,25 @@ async def run_plan(
         yield {"type": "subtask_completed", "name": st.name, "tool": tool, "data": data}
 
     # ── Final synthesis — streams tokens ────────────────────────────────
+    system = (
+        "You are a senior equity research analyst. Synthesize the research "
+        "below into a concise, investment-grade note that directly answers "
+        "the objective. Use specific numbers from the data; never fabricate "
+        "figures. No generic disclaimers."
+    )
+    synth_user = (
+        f"Objective: {objective or '(none stated)'}\n"
+        f"Tickers: {', '.join(tickers) or '(none)'}\n\n"
+        f"Findings:\n{json.dumps(outputs, default=str)[:_CONTEXT_CHARS * 2]}"
+    )
+    synth_model = route_model(KIND_SYNTHESIS)  # the implicit final synthesis step
     full = ""
     try:
-        system = (
-            "You are a senior equity research analyst. Synthesize the research "
-            "below into a concise, investment-grade note that directly answers "
-            "the objective. Use specific numbers from the data; never fabricate "
-            "figures. No generic disclaimers."
-        )
-        user_msg = (
-            f"Objective: {objective or '(none stated)'}\n"
-            f"Tickers: {', '.join(tickers) or '(none)'}\n\n"
-            f"Findings:\n{json.dumps(outputs, default=str)[:_CONTEXT_CHARS * 2]}"
-        )
-        synth_model = route_model(KIND_SYNTHESIS)  # the implicit final synthesis step
         with client.messages.stream(
             model=synth_model,
             max_tokens=1200,
             system=system,
-            messages=[{"role": "user", "content": user_msg}],
+            messages=[{"role": "user", "content": synth_user}],
         ) as stream:
             for text in stream.text_stream:
                 full += text
@@ -266,6 +268,39 @@ async def run_plan(
     except Exception as e:
         yield {"type": "error", "error": f"synthesis failed: {e}"}
         return
+
+    # ── Validate the memo; retry synthesis ONCE on a failing score ───────
+    # Fail-open (see validator): a killed/failed grader passes at 10, so a run is
+    # never blocked. When scoring is enabled we emit a 'validation' event (before
+    # 'usage') so the frontend can badge the memo; validator + retry tokens fold
+    # into `usage` so the displayed cost covers them.
+    if validator.enabled():
+        verdict, val_usage = validator.validate(objective, full, outputs, client=client)
+        usage.add(RESEARCH_VALIDATOR_MODEL, val_usage)
+        retried = False
+        if not verdict["ok"]:
+            retried = True
+            fix = verdict["feedback"] or "; ".join(verdict["issues"]) or "Be more specific and numeric."
+            revision = (
+                f"{synth_user}\n\n"
+                f"REVISION REQUIRED — a reviewer scored your previous draft "
+                f"{verdict['score']}/10, below the bar. Fix this and rewrite the "
+                f"note in full:\n{fix}\n"
+                "Stay grounded in the findings above; never fabricate figures."
+            )
+            try:
+                resp = client.messages.create(
+                    model=synth_model, max_tokens=1200, system=system,
+                    messages=[{"role": "user", "content": revision}],
+                )
+                revised = (resp.content[0].text or "").strip()
+                if revised:
+                    full = revised  # the second draft ships regardless of its own quality
+                usage.add(synth_model, getattr(resp, "usage", None))
+            except Exception as e:  # retry failed → keep the first draft
+                logger.debug("synthesis retry failed, keeping first draft: %s", e)
+        yield {"type": "validation", "score": verdict["score"], "ok": verdict["ok"],
+               "retried": retried, "issues": verdict["issues"]}
 
     yield usage.event()
     yield {"type": "complete", "synthesis": full, "outputs": outputs}
