@@ -1001,6 +1001,13 @@ body.numa-open .numa-edge{transform:translateY(-50%) translateX(130%);opacity:0;
 .rsk-memo-head{display:flex;align-items:center;gap:8px;}
 .mmeta .rsk-badge{margin-left:2px;}
 
+/* in-editor Test run (no persistence) — a result panel beneath the editor */
+.rsk-edit-test{margin-top:14px;border-color:var(--accent-line);}
+.rsk-edit-test .rsk-run-meta .rsk-label{margin-right:2px;}
+.rsk-btn.xs{margin-left:auto;padding:4px 10px;font-size:11px;}
+.rsk-run-cost{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px solid var(--border-soft);min-height:14px;}
+.rsk-run-cost .rsk-cost-v{font-family:var(--font-mono);font-weight:600;color:var(--text-2);}
+
 /* run: meta + progress rows (reuses .lc-spin / .lc-done from the analyze loader) */
 .rsk-run-meta{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:4px;}
 .rsk-chip{font-family:var(--font-mono);font-size:11px;font-weight:600;padding:4px 9px;border-radius:7px;background:var(--bg-subtle);border:1px solid var(--border);color:var(--text-2);}

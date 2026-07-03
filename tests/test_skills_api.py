@@ -71,6 +71,19 @@ def test_skills_crud_roundtrip(tmp_skills):
     assert client.get("/skills").json() == []
 
 
+def test_create_returns_id_and_get_reflects_it(tmp_skills):
+    # The contract the frontend's save→refresh relies on: POST returns the created
+    # skill's id, and an immediate GET /skills includes exactly that skill. If this
+    # holds, the list can never render empty right after a successful save.
+    created = client.post("/skills", json={"name": "Refresh me", "description": "", "plan": _PLAN})
+    assert created.status_code == 200
+    sid = created.json()["id"]
+    assert sid                              # a truthy id is returned
+    listed = client.get("/skills").json()
+    assert [s["id"] for s in listed] == [sid]
+    assert listed[0]["name"] == "Refresh me"
+
+
 def test_put_unknown_id_404(tmp_skills):
     r = client.put("/skills/nope", json={"name": "x", "description": "", "plan": _PLAN})
     assert r.status_code == 404

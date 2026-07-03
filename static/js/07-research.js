@@ -46,8 +46,9 @@ const RSK_MODELS = [{v:'',l:'Default'},{v:'haiku',l:'Haiku'},{v:'sonnet',l:'Sonn
 // `estimate` caches the latest /research/estimate result so cost pills survive a
 // re-render until the next (debounced) re-estimate paints fresh numbers.
 // `clarify` holds a pending clarifier round-trip in the Skills door (view
-// 'clarify'): {questions, desc, tickers}.
-let RESEARCH = {skills:null, loading:false, view:'list', editing:null, run:null, proposeText:'', estimate:null, clarify:null};
+// 'clarify'): {questions, desc, tickers}. `editRun` holds an in-editor "Test
+// run" (feature): its live stream state rendered beneath the editor.
+let RESEARCH = {skills:null, loading:false, view:'list', editing:null, run:null, proposeText:'', estimate:null, clarify:null, editRun:null};
 
 /* ---- small helpers ---- */
 function rskEsc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
@@ -247,6 +248,18 @@ function rskUpdateNavBadge(){
   const n=(RESEARCH.skills||[]).length;
   b.textContent=n; b.style.display=n?'inline-block':'none';
 }
+// Force a fresh GET /skills after a mutation. Unlike loadSkills(), it ignores the
+// re-entrancy guard and always awaits the network, so the list NEVER renders from
+// cached/stale state after a create/update/delete (the caller renders after this
+// resolves). On network failure it keeps the last array rather than blanking.
+async function rskRefreshSkills(){
+  try{
+    const r=await fetch(`${API_BASE}/skills`);
+    if(r.ok) RESEARCH.skills = await r.json();
+    else RESEARCH.skills = RESEARCH.skills || [];
+  }catch(e){ RESEARCH.skills = RESEARCH.skills || []; }
+  rskUpdateNavBadge();
+}
 
 /* ============ SECTION OVERRIDE ============
    Replace the demo skills grid (defined in 03-render.js SECTIONS) with the real,
@@ -346,7 +359,7 @@ async function rskProposeGo(){
     RESEARCH.editing=rskNormalizeSkill({
       id:null, name, description:draft.description||desc,
       version:1, plan:draft.plan});
-    RESEARCH.view='edit';
+    RESEARCH.editRun=null; RESEARCH.view='edit';
     renderSection('skills'); rskScheduleEstimate();
   }catch(e){
     if(st) st.innerHTML=`<span class="rsk-err">Couldn't reach the planner. You can still build the skill manually.</span>`;
@@ -378,7 +391,7 @@ async function rskClarifyContinue(){
     const draft=await r.json();
     const name=(draft.name&&draft.name.trim())||rskTrimName(c.desc,40);
     RESEARCH.editing=rskNormalizeSkill({id:null, name, description:draft.description||c.desc, version:1, plan:draft.plan});
-    RESEARCH.clarify=null; RESEARCH.view='edit';
+    RESEARCH.clarify=null; RESEARCH.editRun=null; RESEARCH.view='edit';
     renderSection('skills'); rskScheduleEstimate();
   }catch(e){
     if(btn){ btn.disabled=false; btn.textContent='Continue → draft plan'; }
@@ -401,6 +414,7 @@ function rskEditorHTML(){
   const names=ed.plan.subtasks.map(s=>s.name);
   const cards=ed.plan.subtasks.map((st,i)=>rskSubtaskCard(st,i,names)).join('');
   const isNew=!ed.id;
+  const testing=!!(RESEARCH.editRun && RESEARCH.editRun.phase==='running');
   return `${rskHead(isNew?'New skill':'Edit skill', isNew?'Draft the pipeline, then save it.':'Tweak the pipeline. Saving bumps the version.', true)}
     <div class="rsk-panel">
       <label class="rsk-label">Name</label>
@@ -416,9 +430,11 @@ function rskEditorHTML(){
       ${rskCostPanelHTML()}
       <div class="rsk-actions rsk-actions-foot">
         <button class="rsk-btn primary" data-rsk="save">${isNew?'Save skill':'Save changes'}</button>
+        <button class="rsk-btn ghost" data-rsk="test-run" ${testing?'disabled':''} title="Run this plan on the header ticker without saving">${testing?'Testing…':'▶ Test run'}</button>
         <button class="rsk-btn ghost" data-rsk="cancel">Cancel</button>
       </div>
-    </div>`;
+    </div>
+    ${RESEARCH.editRun?rskEditTestHTML(RESEARCH.editRun):''}`;
 }
 function rskSubtaskCard(st,i,names){
   const tool=resolveToolJS(st.name);
@@ -486,32 +502,47 @@ async function rskSaveSkill(){
   const body={name:ed.name.trim(), description:ed.description||'', plan:{subtasks:
     ed.plan.subtasks.map(s=>({name:s.name, description:s.description||'', depends_on:s.depends_on||[],
       model_override:s.model_override||null}))}};
+  const saveBtn=document.querySelector('[data-rsk="save"]');
+  if(saveBtn) saveBtn.disabled=true;
+  // Await the mutation. Only a confirmed-OK response leaves the editor; a failure
+  // must never look like a success, so we stay put and surface the error.
+  let ok=false;
   try{
     const url=ed.id?`${API_BASE}/skills/${ed.id}`:`${API_BASE}/skills`;
     const r=await fetch(url,{method:ed.id?'PUT':'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
-    if(!r.ok) throw new Error('save failed');
-    toast(ed.id?'Skill updated':'Skill saved');
-    RESEARCH.view='list'; RESEARCH.editing=null;
-    await loadSkills();
-    if(CURRENT==='skills') renderSection('skills');
-  }catch(e){ toast('Could not save skill'); }
+    ok=r.ok;
+  }catch(e){ ok=false; }
+  if(!ok){
+    if(saveBtn) saveBtn.disabled=false;
+    toast('Could not save skill');   // stay in the editor
+    return;
+  }
+  toast(ed.id?'Skill updated':'Skill saved');
+  // Success → leave the editor and re-fetch GET /skills UNCONDITIONALLY before
+  // rendering the list, so it reflects the mutation (never renders from cache).
+  RESEARCH.view='list'; RESEARCH.editing=null; RESEARCH.estimate=null; RESEARCH.editRun=null;
+  await rskRefreshSkills();
+  if(CURRENT==='skills') renderSection('skills');
 }
 function rskEditSkill(id){
   const s=(RESEARCH.skills||[]).find(x=>x.id===id);
   if(!s){ toast('Skill not found'); return; }
   RESEARCH.editing=rskNormalizeSkill(JSON.parse(JSON.stringify(s)));
+  RESEARCH.editRun=null;   // fresh editing session — clear any prior test run
   RESEARCH.view='edit'; renderSection('skills'); rskScheduleEstimate();
 }
 async function rskDeleteSkill(id){
+  let ok=false;
   try{
     const r=await fetch(`${API_BASE}/skills/${id}`,{method:'DELETE'});
-    if(!r.ok) throw new Error('delete failed');
-    toast('Skill deleted');
-    await loadSkills();
-    if(CURRENT==='skills') renderSection('skills');
-  }catch(e){ toast('Could not delete'); }
+    ok=r.ok;
+  }catch(e){ ok=false; }
+  if(!ok){ toast('Could not delete'); return; }
+  toast('Skill deleted');
+  // Same rule as save: re-fetch before rendering, never from cached state.
+  await rskRefreshSkills();
+  if(CURRENT==='skills') renderSection('skills');
 }
-
 /* ============ RUN ============ */
 function rskRenderPlan(plan, ticker){
   return {subtasks:((plan&&plan.subtasks)||[]).map(s=>({
@@ -589,12 +620,14 @@ async function rskRunConfirm(){
   run.runId=runId;
   rskStreamResearch(runId);
 }
-async function rskStreamResearch(runId){
-  const run=RESEARCH.run;
+// Shared SSE reader for /research/stream/{runId}: parse each data line and hand
+// the event to onEvent; onError('…') on a connect failure; onDone() at stream end.
+// Used by both the Skills run view and the in-editor Test run.
+async function rskConsumeSSE(runId, onEvent, onError, onDone){
   let res;
   try{ res=await fetch(`${API_BASE}/research/stream/${runId}`); }
-  catch(e){ rskRunError('Stream unavailable.'); return; }
-  if(!res.ok||!res.body){ rskRunError('Stream unavailable.'); return; }
+  catch(e){ onError('Stream unavailable.'); return; }
+  if(!res.ok||!res.body){ onError('Stream unavailable.'); return; }
   const reader=res.body.getReader(), dec=new TextDecoder(); let buf='';
   while(true){
     let chunk;
@@ -608,11 +641,15 @@ async function rskStreamResearch(runId){
       if(!p||p==='[DONE]') continue;
       p=p.replace(/\b-?Infinity\b/g,'null').replace(/\bNaN\b/g,'null');
       let ev; try{ ev=JSON.parse(p); }catch(e){ continue; }
-      rskHandleEvent(ev);
+      onEvent(ev);
     }
   }
-  // Stream ended: if no fatal error already flipped us to done, finalize.
-  if(RESEARCH.run===run && run.phase!=='done') rskRunFinish();
+  onDone();
+}
+async function rskStreamResearch(runId){
+  const run=RESEARCH.run;
+  await rskConsumeSSE(runId, rskHandleEvent, rskRunError,
+    ()=>{ if(RESEARCH.run===run && run.phase!=='done') rskRunFinish(); });
 }
 function rskHandleEvent(ev){
   const run=RESEARCH.run; if(!run) return;
@@ -677,6 +714,112 @@ function rskSaveNote(){
   toast('Saved to Notes');
 }
 
+/* ============ TEST RUN (in-editor, no persistence) ============
+   Runs the CURRENT editor plan on the header ticker via POST /research/run + the
+   SSE stream, rendering progress rows + memo + quality badge + actual-cost line
+   BENEATH the editor. Nothing is saved; the editor stays intact so the user can
+   tweak & re-test, then save or discard. RESEARCH.editRun holds the live state so
+   the result survives editor re-renders (rows are captured on finish). */
+function rskUsageLine(u){
+  if(!u) return '';
+  const tok=((u.input_tokens||0)+(u.output_tokens||0)).toLocaleString();
+  return `<span class="rsk-cost-lbl">Actual cost</span><span class="rsk-cost-v">${tok} tok · $${(u.cost_usd||0).toFixed(4)}</span>`;
+}
+function rskEditTestHTML(er){
+  const done=er.phase==='done';
+  return `<div class="rsk-panel rsk-edit-test">
+    <div class="rsk-run-meta">
+      <span class="rsk-label">Test run</span>
+      <span class="rsk-chip ticker">${rskEsc(er.ticker)}</span>
+      <span id="rskTestPhase" class="rsk-hint">${done?'Complete':'Streaming…'}</span>
+      <button class="rsk-btn ghost xs" data-rsk="test-clear" title="Dismiss this test run">Clear</button>
+    </div>
+    <div class="rsk-run-steps" id="rskTestRows">${er.rowsHTML||''}</div>
+    <div class="rsk-memo-wrap">
+      <div class="rsk-memo-head"><span class="rsk-label">Memo</span><span id="rskTestBadge" class="rsk-badge-slot">${er.validation?rskBadgeHTML(er.validation):''}</span></div>
+      <div class="rsk-memo" id="rskTestMemo">${er.memoRaw?renderMD(er.memoRaw):'<span class="rsk-hint">Waiting for synthesis…</span>'}</div>
+    </div>
+    <div class="rsk-run-cost" id="rskTestCost">${er.usage?rskUsageLine(er.usage):''}</div>
+  </div>`;
+}
+async function rskTestRun(){
+  const ed=RESEARCH.editing; if(!ed) return;
+  if(RESEARCH.editRun && RESEARCH.editRun.phase==='running') return;  // guard double-click
+  rskSyncEditorFromDOM();
+  const ticker=rskCurrentTicker();
+  const rplan=rskRenderPlan(ed.plan, ticker);
+  const nm=(ed.name||'').trim()||'Test run';
+  const objective=`${nm}: ${String(ed.description||'').replace(/\{ticker\}/g,ticker)} (${ticker})`.trim();
+  const mode=(typeof PREMIUM_MODE!=='undefined'&&PREMIUM_MODE)?'premium':'free';
+  RESEARCH.editRun={phase:'running', memoRaw:'', validation:null, usage:null, rowsHTML:'', _memoDirty:false, ticker, runId:null};
+  renderSection('skills');   // lay out the test container; the button renders disabled
+  const er=RESEARCH.editRun;
+  let runId;
+  try{
+    const r=await fetch(`${API_BASE}/research/run`,{method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({plan:rplan, tickers:[ticker], objective, mode})});
+    if(!r.ok) throw new Error('run start failed');
+    runId=(await r.json()).run_id;
+  }catch(e){ rskTestError('Could not start the test run — is the backend up?'); return; }
+  er.runId=runId;
+  await rskConsumeSSE(runId, rskTestHandleEvent, rskTestError,
+    ()=>{ if(RESEARCH.editRun===er && er.phase!=='done') rskTestFinish(); });
+}
+function rskTestHandleEvent(ev){
+  const er=RESEARCH.editRun; if(!er) return;
+  if(ev.type==='subtask_started'){
+    const rows=document.getElementById('rskTestRows'); if(!rows) return;
+    const tool=ev.tool||resolveToolJS(ev.name);
+    const row=document.createElement('div');
+    row.className='rsk-prow live'; row.id='rsktrow-'+rskSlug(ev.name);
+    row.innerHTML=`<span class="rsk-prow-ic"><span class="lc-spin"></span></span>
+      <div class="rsk-prow-body"><div class="rsk-prow-title">${rskEsc(rskToolLabel(tool))} <span class="rsk-prow-name">${rskEsc(ev.name)}</span></div>
+      <div class="rsk-prow-sub">${rskEsc(ev.description||'')}</div></div>`;
+    rows.appendChild(row);
+  } else if(ev.type==='subtask_completed'){
+    const row=document.getElementById('rsktrow-'+rskSlug(ev.name)); if(!row) return;
+    const err=ev.data&&ev.data.error, ic=row.querySelector('.rsk-prow-ic');
+    if(ic) ic.innerHTML=err?'<span class="rsk-x">!</span>':`<span class="lc-done">${LC_CHECK}</span>`;
+    row.classList.remove('live'); row.classList.add(err?'err':'done');
+    if(err){ const sub=row.querySelector('.rsk-prow-sub'); if(sub) sub.textContent='Error: '+err; }
+  } else if(ev.type==='synthesis_token'){
+    er.memoRaw+=ev.token||''; er._memoDirty=true; requestAnimationFrame(rskTestFlushMemo);
+  } else if(ev.type==='validation'){
+    er.validation=ev; const b=document.getElementById('rskTestBadge'); if(b) b.innerHTML=rskBadgeHTML(ev);
+  } else if(ev.type==='usage'){
+    er.usage=ev; const c=document.getElementById('rskTestCost'); if(c) c.innerHTML=rskUsageLine(ev);
+  } else if(ev.type==='complete'){
+    if(typeof ev.synthesis==='string'&&ev.synthesis) er.memoRaw=ev.synthesis;
+    er._memoDirty=true; rskTestFlushMemo();
+  } else if(ev.type==='error'){
+    rskTestError(ev.error||'Run error');
+  }
+}
+function rskTestFlushMemo(){
+  const er=RESEARCH.editRun; if(!er||!er._memoDirty) return;
+  er._memoDirty=false;
+  const m=document.getElementById('rskTestMemo'); if(m) m.innerHTML=renderMD(er.memoRaw)||'<span class="rsk-hint">…</span>';
+}
+function rskTestCaptureRows(er){
+  const rows=document.getElementById('rskTestRows'); if(rows) er.rowsHTML=rows.innerHTML;
+}
+function rskTestFinish(){
+  const er=RESEARCH.editRun; if(!er) return;
+  er.phase='done'; rskTestCaptureRows(er); rskTestFlushMemo();
+  const ph=document.getElementById('rskTestPhase'); if(ph) ph.textContent='Complete';
+  rskTestSetBtn(false);
+}
+function rskTestError(msg){
+  const er=RESEARCH.editRun; if(er){ er.phase='done'; rskTestCaptureRows(er); }
+  const m=document.getElementById('rskTestMemo'); if(m) m.innerHTML=`<span class="rsk-err">${rskEsc(msg)}</span>`;
+  const ph=document.getElementById('rskTestPhase'); if(ph) ph.textContent='Error';
+  rskTestSetBtn(false);
+}
+function rskTestSetBtn(streaming){
+  const b=document.querySelector('[data-rsk="test-run"]');
+  if(b){ b.disabled=streaming; b.textContent=streaming?'Testing…':'▶ Test run'; }
+}
+
 /* ============ EVENT DELEGATION ============
    One click listener for every data-rsk action + one change listener for the
    per-step Tool select. Unique attribute names → no collision with 06-app.js. */
@@ -688,7 +831,7 @@ document.addEventListener('click',e=>{
   const ed=RESEARCH.editing;
 
   if(action==='new'){ RESEARCH.view='propose'; RESEARCH.proposeText=''; renderSection('skills'); return; }
-  if(action==='blank'){ RESEARCH.editing=rskBlankSkill(); RESEARCH.view='edit'; renderSection('skills'); rskScheduleEstimate(); return; }
+  if(action==='blank'){ RESEARCH.editing=rskBlankSkill(); RESEARCH.editRun=null; RESEARCH.view='edit'; renderSection('skills'); rskScheduleEstimate(); return; }
   if(action==='propose-go'){ rskProposeGo(); return; }
   if(action==='clarify-go'){ rskClarifyContinue(); return; }
   if(action==='edit'){ rskEditSkill(id); return; }
@@ -699,7 +842,9 @@ document.addEventListener('click',e=>{
     return;
   }
   if(action==='save'){ rskSaveSkill(); return; }
-  if(action==='cancel'){ RESEARCH.view='list'; RESEARCH.editing=null; RESEARCH.run=null; RESEARCH.estimate=null; RESEARCH.clarify=null; renderSection('skills'); return; }
+  if(action==='cancel'){ RESEARCH.view='list'; RESEARCH.editing=null; RESEARCH.run=null; RESEARCH.estimate=null; RESEARCH.clarify=null; RESEARCH.editRun=null; renderSection('skills'); return; }
+  if(action==='test-run'){ rskTestRun(); return; }
+  if(action==='test-clear'){ RESEARCH.editRun=null; renderSection('skills'); return; }
   if(action==='add-subtask'){ if(!ed)return; rskSyncEditorFromDOM(); const nm=rskUniqueName('reason', ed.plan.subtasks.map(s=>s.name)); ed.plan.subtasks.push({name:nm, description:'', depends_on:[], model_override:null}); renderSection('skills'); rskScheduleEstimate(); return; }
   if(action==='del-subtask'){ if(!ed)return; rskSyncEditorFromDOM(); ed.plan.subtasks.splice(i,1); if(!ed.plan.subtasks.length) ed.plan.subtasks.push(rskBlankSubtask()); renderSection('skills'); rskScheduleEstimate(); return; }
   if(action==='up'||action==='down'){
