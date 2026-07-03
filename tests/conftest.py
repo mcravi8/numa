@@ -225,13 +225,19 @@ def make_msg():
 
 @pytest.fixture
 def patch_research(monkeypatch, fake_stock, recorded_info):
-    """Wire the research engine offline: swap the planner/executor Anthropic
-    client for a FakeAnthropic and its live yf.Ticker fetch for the recorded
-    FakeTicker. Returns an ``apply(client)`` callable the test drives."""
+    """Wire the research engine offline: swap the classifier/planner/executor
+    Anthropic client for a FakeAnthropic and its live yf.Ticker fetch for the
+    recorded FakeTicker. Returns an ``apply(client)`` callable the test drives.
+
+    The classifier client MUST be patched too, or a /numa/research decision would
+    reach the real client — a live call locally (with a key) and a spurious
+    'direct' in CI (no key). Every path that touches Claude uses ``client``."""
+    import app.research.classifier as classifier_mod
     import app.research.executor as executor_mod
     import app.research.planner as planner_mod
 
     def _apply(client):
+        monkeypatch.setattr(classifier_mod, "ANTHROPIC_CLIENT", client)
         monkeypatch.setattr(planner_mod, "ANTHROPIC_CLIENT", client)
         monkeypatch.setattr(executor_mod, "ANTHROPIC_CLIENT", client)
         monkeypatch.setattr(
