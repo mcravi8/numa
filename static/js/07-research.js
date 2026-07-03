@@ -36,8 +36,16 @@ const RSK_TOOLS = [
 const RSK_FETCH = new Set(RSK_TOOLS.map(t=>t.v).filter(v=>v!=='reason')); // fetch tools incl. macro
 const RSK_BOLT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"><path d="M13 2L3 14h7l-1 8 10-12h-7z"/></svg>';
 
+/* ---- Per-step model tier (model_override). '' = Default → the backend router
+   picks by kind (reason→Sonnet, synthesis→Sonnet/Opus). The other values force a
+   tier. Display/selection only — the backend routes AND prices; mirrors
+   app/research/router + config.MODEL_ALIASES. -- */
+const RSK_MODELS = [{v:'',l:'Default'},{v:'haiku',l:'Haiku'},{v:'sonnet',l:'Sonnet'},{v:'opus',l:'Opus'}];
+
 // Section sub-view + transient run/edit state (one Skills section, four views).
-let RESEARCH = {skills:null, loading:false, view:'list', editing:null, run:null, proposeText:''};
+// `estimate` caches the latest /research/estimate result so cost pills survive a
+// re-render until the next (debounced) re-estimate paints fresh numbers.
+let RESEARCH = {skills:null, loading:false, view:'list', editing:null, run:null, proposeText:'', estimate:null};
 
 /* ---- small helpers ---- */
 function rskEsc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
@@ -66,7 +74,7 @@ function rskDedupeNames(subs){
   const seen=[];
   subs.forEach(s=>{ if(seen.indexOf(s.name)>=0) s.name=rskUniqueName(s.name, seen); seen.push(s.name); });
 }
-function rskBlankSubtask(){return {name:'reason', description:'', depends_on:[]};}
+function rskBlankSubtask(){return {name:'reason', description:'', depends_on:[], model_override:null};}
 function rskBlankSkill(){
   return {id:null, name:'', description:'', version:1, plan:{subtasks:[
     {name:'technicals', description:'Pull the technical setup for {ticker}.', depends_on:[]},
@@ -76,6 +84,87 @@ function rskBlankSkill(){
 function rskCurrentTicker(){
   const el=document.getElementById('tickerInput');
   return ((el&&el.value)||(DATA&&DATA.ticker)||'').toUpperCase().trim()||'AAPL';
+}
+
+/* ============ COST ESTIMATE (mirrors POST /research/estimate) ============
+   The editor and the run-confirm screen show a per-step cost pill (model + ~$)
+   and a projected-total panel. On any edit we re-estimate against the backend
+   (debounced ~250ms) and repaint the pills IN PLACE — no re-render — so typing
+   and focus survive. The backend does the routing + pricing; we only render. */
+let _rskEstTimer=null, _rskEstSeq=0;
+// Format an estimated USD figure; $0 for a free (fetch / no-LLM) step.
+function rskUsd(u, dp){ u=+u||0; if(!u) return '$0'; return '~$'+u.toFixed(dp||3); }
+
+// The plan payload the estimate/run needs from a subtask list (carries the
+// per-step model_override so the backend routes + prices the chosen tier).
+function rskPlanPayload(subs){
+  return {subtasks:((subs)||[]).map(s=>({
+    name:s.name, description:s.description||'',
+    depends_on:s.depends_on||[], model_override:s.model_override||null}))};
+}
+
+// {plan, objective} for whatever cost UI is on screen, or null when none is.
+function rskCostContext(){
+  if(RESEARCH.view==='edit' && RESEARCH.editing){
+    const ed=RESEARCH.editing;
+    return {plan:rskPlanPayload(ed.plan.subtasks), objective:(ed.description||ed.name||'')};
+  }
+  if(RESEARCH.view==='run' && RESEARCH.run && RESEARCH.run.phase==='confirm'){
+    const run=RESEARCH.run, ticker=run.ticker;
+    const rplan=rskRenderPlan(run.skill.plan, ticker);
+    const objective=`${run.skill.name}: ${String(run.skill.description||'').replace(/\{ticker\}/g,ticker)} (${ticker})`.trim();
+    return {plan:rplan, objective};
+  }
+  return null;
+}
+
+// Debounced re-estimate: only fires when a cost UI is visible; a sequence guard
+// drops stale responses so fast edits always land the newest numbers.
+function rskScheduleEstimate(){
+  const ctx=rskCostContext(); if(!ctx) return;
+  if(_rskEstTimer) clearTimeout(_rskEstTimer);
+  _rskEstTimer=setTimeout(async ()=>{
+    _rskEstTimer=null; const seq=++_rskEstSeq;
+    let est=null;
+    try{
+      const r=await fetch(`${API_BASE}/research/estimate`,{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({plan:ctx.plan, objective:ctx.objective})});
+      if(r.ok) est=await r.json();
+    }catch(e){ /* estimate is best-effort; leave the last pills up */ }
+    if(seq!==_rskEstSeq || !est) return;   // a newer edit already superseded this
+    RESEARCH.estimate=est; rskPaintCost(est);
+  },250);
+}
+
+// Paint one pill span from an estimate step (model_label · ~$usd; "no LLM" free).
+function rskPillSet(el, s){
+  if(!el||!s) return;
+  const isFetch = !s.model;
+  el.textContent = (isFetch?'no LLM':(s.model_label||'LLM'))+' · '+(isFetch?'$0':rskUsd(s.usd));
+  el.classList.toggle('fetch', isFetch);
+}
+
+// Patch every on-screen pill + the projected-total panel from an estimate.
+function rskPaintCost(est){
+  if(!est) return;
+  (est.steps||[]).forEach((s,i)=>rskPillSet(document.getElementById('rskpill-'+i), s));
+  rskPillSet(document.getElementById('rskpill-synth'), est.synthesis);
+  const a=document.getElementById('rskCostAgents'); if(a) a.textContent=rskUsd(est.agents_usd);
+  const sy=document.getElementById('rskCostSynth'); if(sy) sy.textContent=rskUsd(est.synthesis_usd);
+  const t=document.getElementById('rskCostTotal'); if(t) t.textContent=rskUsd(est.total_usd,4);
+}
+
+// The projected-total panel (a synthesis pill + the three running totals).
+function rskCostPanelHTML(){
+  return `<div class="rsk-cost-panel">
+    <div class="rsk-cost-head"><span class="rsk-label">Projected cost</span>
+      <span class="rsk-hint">Estimate · list prices · updates as you edit</span></div>
+    <div class="rsk-cost-rows">
+      <div class="rsk-cost-row"><span>Steps</span><span id="rskCostAgents" class="rsk-cost-v">…</span></div>
+      <div class="rsk-cost-row"><span>Synthesis <span class="rsk-pill" id="rskpill-synth">…</span></span><span id="rskCostSynth" class="rsk-cost-v">…</span></div>
+      <div class="rsk-cost-row total"><span>Projected total</span><span id="rskCostTotal" class="rsk-cost-v">…</span></div>
+    </div></div>`;
 }
 
 /* ============ DATA LOAD ============ */
@@ -187,7 +276,7 @@ async function rskProposeGo(){
       id:null, name, description:draft.description||desc,
       version:1, plan:draft.plan});
     RESEARCH.view='edit';
-    renderSection('skills');
+    renderSection('skills'); rskScheduleEstimate();
   }catch(e){
     if(st) st.innerHTML=`<span class="rsk-err">Couldn't reach the planner. You can still build the skill manually.</span>`;
   }
@@ -195,7 +284,8 @@ async function rskProposeGo(){
 function rskNormalizeSkill(s){
   const subs=((s.plan&&s.plan.subtasks)||[]).map(t=>({
     name:String(t.name||'reason'), description:String(t.description||''),
-    depends_on:Array.isArray(t.depends_on)?t.depends_on.slice():[]}));
+    depends_on:Array.isArray(t.depends_on)?t.depends_on.slice():[],
+    model_override:t.model_override||null}));
   if(!subs.length) subs.push(rskBlankSubtask());
   return {id:s.id||null, name:String(s.name||''), description:String(s.description||''),
           version:s.version||1, plan:{subtasks:subs}};
@@ -219,6 +309,7 @@ function rskEditorHTML(){
       </div>
       <div class="rsk-subtasks">${cards}</div>
       <button class="rsk-btn ghost add" data-rsk="add-subtask">+ Add step</button>
+      ${rskCostPanelHTML()}
       <div class="rsk-actions rsk-actions-foot">
         <button class="rsk-btn primary" data-rsk="save">${isNew?'Save skill':'Save changes'}</button>
         <button class="rsk-btn ghost" data-rsk="cancel">Cancel</button>
@@ -227,6 +318,7 @@ function rskEditorHTML(){
 }
 function rskSubtaskCard(st,i,names){
   const tool=resolveToolJS(st.name);
+  const isReason=tool==='reason';
   const opts=RSK_TOOLS.map(t=>`<option value="${t.v}"${t.v===tool?' selected':''}>${rskEsc(t.l)}</option>`).join('');
   const prior=names.slice(0,i).filter(Boolean);
   const deps=prior.length
@@ -236,6 +328,13 @@ function rskSubtaskCard(st,i,names){
       }).join('')
     : `<span class="rsk-hint">First step — no dependencies.</span>`;
   const n=names.length;
+  // Cost row: reason steps pick a model tier (Default routes by kind); fetch
+  // steps run a data module (no LLM). The pill is filled by the estimate.
+  const mo=st.model_override||'';
+  const modelOpts=RSK_MODELS.map(m=>`<option value="${m.v}"${m.v===mo?' selected':''}>${rskEsc(m.l)}</option>`).join('');
+  const costCtl=isReason
+    ? `<label class="rsk-cost-lbl">Model</label><select class="rsk-select model" data-rsk-model="${i}">${modelOpts}</select>`
+    : `<span class="rsk-cost-lbl">Data module · no LLM</span>`;
   return `<div class="rsk-sub" data-i="${i}">
     <div class="rsk-sub-top">
       <span class="rsk-step">${i+1}</span>
@@ -249,6 +348,7 @@ function rskSubtaskCard(st,i,names){
     </div>
     <textarea class="rsk-textarea sub" data-rsk-sdesc="${i}" rows="2" placeholder="What this step does">${rskEsc(st.description)}</textarea>
     <div class="rsk-deps"><span class="rsk-deps-lbl">Depends on</span>${deps}</div>
+    <div class="rsk-cost-line">${costCtl}<span class="rsk-pill" id="rskpill-${i}">…</span></div>
   </div>`;
 }
 // Read every editor field back into RESEARCH.editing (called before any structural
@@ -264,6 +364,8 @@ function rskSyncEditorFromDOM(){
     if(ds) st.description=ds.value;
     const boxes=document.querySelectorAll(`[data-rsk-dep="${i}"]`);
     if(boxes.length) st.depends_on=Array.from(boxes).filter(b=>b.checked).map(b=>b.value);
+    const ml=document.querySelector(`[data-rsk-model="${i}"]`);
+    if(ml) st.model_override=ml.value||null;   // '' (Default) → no override
   });
 }
 async function rskSaveSkill(){
@@ -278,7 +380,8 @@ async function rskSaveSkill(){
     s.depends_on=(s.depends_on||[]).filter(d=>prior.has(d));
   });
   const body={name:ed.name.trim(), description:ed.description||'', plan:{subtasks:
-    ed.plan.subtasks.map(s=>({name:s.name, description:s.description||'', depends_on:s.depends_on||[]}))}};
+    ed.plan.subtasks.map(s=>({name:s.name, description:s.description||'', depends_on:s.depends_on||[],
+      model_override:s.model_override||null}))}};
   try{
     const url=ed.id?`${API_BASE}/skills/${ed.id}`:`${API_BASE}/skills`;
     const r=await fetch(url,{method:ed.id?'PUT':'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
@@ -293,7 +396,7 @@ function rskEditSkill(id){
   const s=(RESEARCH.skills||[]).find(x=>x.id===id);
   if(!s){ toast('Skill not found'); return; }
   RESEARCH.editing=rskNormalizeSkill(JSON.parse(JSON.stringify(s)));
-  RESEARCH.view='edit'; renderSection('skills');
+  RESEARCH.view='edit'; renderSection('skills'); rskScheduleEstimate();
 }
 async function rskDeleteSkill(id){
   try{
@@ -309,13 +412,13 @@ async function rskDeleteSkill(id){
 function rskRenderPlan(plan, ticker){
   return {subtasks:((plan&&plan.subtasks)||[]).map(s=>({
     name:s.name, description:String(s.description||'').replace(/\{ticker\}/g,ticker),
-    depends_on:s.depends_on||[]}))};
+    depends_on:s.depends_on||[], model_override:s.model_override||null}))};
 }
 function rskStartRun(id){
   const s=(RESEARCH.skills||[]).find(x=>x.id===id);
   if(!s){ toast('Skill not found'); return; }
   RESEARCH.run={skill:s, ticker:rskCurrentTicker(), phase:'confirm', memoRaw:'', saved:false, runId:null, _memoDirty:false};
-  RESEARCH.view='run'; renderSection('skills');
+  RESEARCH.view='run'; renderSection('skills'); rskScheduleEstimate();
 }
 function rskRunHTML(){
   const run=RESEARCH.run; if(!run) return rskListHTML();
@@ -328,7 +431,8 @@ function rskRunHTML(){
       return `<div class="rsk-prow"><span class="rsk-prow-ic static">${i+1}</span>
         <div class="rsk-prow-body">
           <div class="rsk-prow-title">${rskEsc(rskToolLabel(tool))} <span class="rsk-prow-name">${rskEsc(st.name)}</span></div>
-          <div class="rsk-prow-sub">${rskEsc(st.description||'—')}</div></div></div>`;
+          <div class="rsk-prow-sub">${rskEsc(st.description||'—')}</div></div>
+        <span class="rsk-pill" id="rskpill-${i}">…</span></div>`;
     }).join('');
     return `${rskHead('Run · '+s.name,'Confirm the resolved plan, then Numa runs it live.',true)}
       <div class="rsk-panel">
@@ -336,6 +440,7 @@ function rskRunHTML(){
           <span class="rsk-chip ticker">${rskEsc(ticker)}</span>
           <span class="rsk-hint">Resolved for the header ticker · change it there and re-open Run.</span></div>
         <div class="rsk-run-steps">${steps}</div>
+        ${rskCostPanelHTML()}
         <div class="rsk-actions rsk-actions-foot">
           <button class="rsk-btn primary" data-rsk="run-confirm">▶ Run on ${rskEsc(ticker)}</button>
           <button class="rsk-btn ghost" data-rsk="cancel">Cancel</button>
@@ -476,7 +581,7 @@ document.addEventListener('click',e=>{
   const ed=RESEARCH.editing;
 
   if(action==='new'){ RESEARCH.view='propose'; RESEARCH.proposeText=''; renderSection('skills'); return; }
-  if(action==='blank'){ RESEARCH.editing=rskBlankSkill(); RESEARCH.view='edit'; renderSection('skills'); return; }
+  if(action==='blank'){ RESEARCH.editing=rskBlankSkill(); RESEARCH.view='edit'; renderSection('skills'); rskScheduleEstimate(); return; }
   if(action==='propose-go'){ rskProposeGo(); return; }
   if(action==='edit'){ rskEditSkill(id); return; }
   if(action==='delete'){
@@ -486,29 +591,44 @@ document.addEventListener('click',e=>{
     return;
   }
   if(action==='save'){ rskSaveSkill(); return; }
-  if(action==='cancel'){ RESEARCH.view='list'; RESEARCH.editing=null; RESEARCH.run=null; renderSection('skills'); return; }
-  if(action==='add-subtask'){ if(!ed)return; rskSyncEditorFromDOM(); const nm=rskUniqueName('reason', ed.plan.subtasks.map(s=>s.name)); ed.plan.subtasks.push({name:nm, description:'', depends_on:[]}); renderSection('skills'); return; }
-  if(action==='del-subtask'){ if(!ed)return; rskSyncEditorFromDOM(); ed.plan.subtasks.splice(i,1); if(!ed.plan.subtasks.length) ed.plan.subtasks.push(rskBlankSubtask()); renderSection('skills'); return; }
+  if(action==='cancel'){ RESEARCH.view='list'; RESEARCH.editing=null; RESEARCH.run=null; RESEARCH.estimate=null; renderSection('skills'); return; }
+  if(action==='add-subtask'){ if(!ed)return; rskSyncEditorFromDOM(); const nm=rskUniqueName('reason', ed.plan.subtasks.map(s=>s.name)); ed.plan.subtasks.push({name:nm, description:'', depends_on:[], model_override:null}); renderSection('skills'); rskScheduleEstimate(); return; }
+  if(action==='del-subtask'){ if(!ed)return; rskSyncEditorFromDOM(); ed.plan.subtasks.splice(i,1); if(!ed.plan.subtasks.length) ed.plan.subtasks.push(rskBlankSubtask()); renderSection('skills'); rskScheduleEstimate(); return; }
   if(action==='up'||action==='down'){
     if(!ed)return; rskSyncEditorFromDOM();
     const j=action==='up'?i-1:i+1, a=ed.plan.subtasks;
     if(j<0||j>=a.length) return;
-    const t=a[i]; a[i]=a[j]; a[j]=t; renderSection('skills'); return;
+    const t=a[i]; a[i]=a[j]; a[j]=t; renderSection('skills'); rskScheduleEstimate(); return;
   }
   if(action==='run'){ rskStartRun(id); return; }
   if(action==='run-confirm'){ rskRunConfirm(); return; }
-  if(action==='run-again'){ if(RESEARCH.run){ RESEARCH.run.phase='confirm'; RESEARCH.run.saved=false; } renderSection('skills'); return; }
+  if(action==='run-again'){ if(RESEARCH.run){ RESEARCH.run.phase='confirm'; RESEARCH.run.saved=false; } renderSection('skills'); rskScheduleEstimate(); return; }
   if(action==='save-note'){ rskSaveNote(); return; }
 });
-// Tool select drives the step name (name is the backend's tool selector).
+// Editor selects/checkboxes: the Tool select drives the step name (name is the
+// backend's tool selector) and is structural (dependency options + the cost
+// control change), so it re-renders; the Model tier and dependency toggles only
+// change cost, so they re-price in place (no re-render → no lost focus).
 document.addEventListener('change',e=>{
-  const ts=e.target.closest('[data-rsk-tool]'); if(!ts) return;
-  const ed=RESEARCH.editing; if(!ed) return;
-  rskSyncEditorFromDOM();
-  const idx=+ts.getAttribute('data-rsk-tool');
-  const others=ed.plan.subtasks.map((s,j)=>j===idx?null:s.name).filter(Boolean);
-  ed.plan.subtasks[idx].name=rskUniqueName(ts.value, others);
-  renderSection('skills');
+  const ed=RESEARCH.editing;
+  const ts=e.target.closest('[data-rsk-tool]');
+  if(ts && ed){
+    rskSyncEditorFromDOM();
+    const idx=+ts.getAttribute('data-rsk-tool');
+    const others=ed.plan.subtasks.map((s,j)=>j===idx?null:s.name).filter(Boolean);
+    ed.plan.subtasks[idx].name=rskUniqueName(ts.value, others);
+    renderSection('skills'); rskScheduleEstimate();
+    return;
+  }
+  if(ed && (e.target.closest('[data-rsk-model]')||e.target.closest('[data-rsk-dep]'))){
+    rskSyncEditorFromDOM(); rskScheduleEstimate();
+  }
+});
+// Live typing in the editor (name / description / step fields) re-prices too.
+document.addEventListener('input',e=>{
+  if(RESEARCH.view!=='edit'||!RESEARCH.editing) return;
+  if(!e.target.closest('#rskName,#rskDesc,[data-rsk-name],[data-rsk-sdesc]')) return;
+  rskSyncEditorFromDOM(); rskScheduleEstimate();
 });
 
 /* ============================================================

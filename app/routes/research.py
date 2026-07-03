@@ -25,6 +25,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.research.classifier import decide
+from app.research.cost_estimate import estimate_plan
 from app.research.executor import UsageAccumulator, run_plan
 from app.research.planner import AUTO_MAX_SUBTASKS, build_plan
 from app.research.schemas import Plan
@@ -65,6 +66,25 @@ def research_plan(req: PlanRequest) -> dict:
     bad model response — see build_plan)."""
     plan = build_plan(req.objective, req.tickers)
     return plan.model_dump()
+
+
+# ============================================================
+# === ESTIMATE — project a plan's USD cost before running it ===
+# ============================================================
+# Pure math (app/research/cost_estimate.py) — no LLM call — so the run-confirm
+# screen and the skill editor can price a plan (per step + projected total) and
+# re-price it live as steps/models are edited.
+
+class EstimateRequest(BaseModel):
+    plan: Plan
+    objective: str = ""
+
+
+@router.post("/research/estimate")
+def research_estimate(req: EstimateRequest) -> dict:
+    """Per-step {name, kind, model, usd} + {agents_usd, synthesis_usd, total_usd}
+    for a plan run against ``objective``. No LLM call, never raises on a bad plan."""
+    return estimate_plan(req.plan, req.objective)
 
 
 # ============================================================

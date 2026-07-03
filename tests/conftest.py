@@ -192,11 +192,17 @@ class _FakeMessages:
         self._create_fn = create_fn
         self._stream_tokens = stream_tokens
         self._stream_usage = stream_usage
+        # Recorded call kwargs (incl. ``model``) so routing tests can assert which
+        # model each reason/synthesis call went to.
+        self.create_calls = []
+        self.stream_calls = []
 
     def create(self, **kwargs):
+        self.create_calls.append(kwargs)
         return self._create_fn(kwargs)
 
     def stream(self, **kwargs):
+        self.stream_calls.append(kwargs)
         return _FakeStream(self._stream_tokens, self._stream_usage)
 
 

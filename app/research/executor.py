@@ -31,12 +31,18 @@ import re
 
 from app.config import (
     ANTHROPIC_CLIENT,
-    RESEARCH_REASON_MODEL,
-    RESEARCH_SYNTHESIS_MODEL,
     estimate_cost_usd,
     logger,
 )
-from app.research.schemas import Plan, render_plan
+from app.research.router import route_model
+from app.research.schemas import (
+    KIND_FETCH,
+    KIND_REASON,
+    KIND_SYNTHESIS,
+    Plan,
+    coerce_kind,
+    render_plan,
+)
 from app.routes.analyze import MODULE_REGISTRY, Ctx
 from app.routes.macro import get_macro
 from app.utils import _json_safe
@@ -104,6 +110,21 @@ def resolve_tool(name: str) -> str:
     return norm if norm in FETCH_TOOLS else REASON_TOOL
 
 
+def effective_kind(st) -> str:
+    """The kind that actually governs a subtask's routing & cost, reconciling its
+    emitted ``kind`` with the tool its ``name`` resolves to. A fetch tool is
+    always ``fetch`` (it runs a data module, no LLM) regardless of any emitted
+    kind; a reason tool is ``reason`` unless the planner explicitly marked it
+    ``synthesis`` (routing that step to the larger synthesis model). ``st`` is a
+    Subtask (or anything with ``.name``/``.kind``). This is the single source both
+    the executor's dispatch and the cost estimator route on, so they can't drift.
+    """
+    if resolve_tool(getattr(st, "name", "")) != REASON_TOOL:
+        return KIND_FETCH
+    k = coerce_kind(getattr(st, "kind", None))
+    return KIND_REASON if k == KIND_FETCH else k
+
+
 def _default_stock_factory(ticker: str):
     """Fetch (stock, info) the way the analyze endpoints do. Injectable so tests
     can hand in the recorded FakeTicker instead of hitting the network."""
@@ -136,9 +157,10 @@ def _run_fetch(tool: str, tickers, ctxs: dict) -> dict:
     return out
 
 
-def _reason(client, description: str, context: dict):
-    """Free-form Claude step over the outputs of a subtask's depends_on.
-    Returns ``(bag, usage)`` so the caller can accumulate token usage."""
+def _reason(client, description: str, context: dict, model: str):
+    """Free-form Claude step over the outputs of a subtask's depends_on, on the
+    router-chosen ``model``. Returns ``(bag, usage)`` so the caller can accumulate
+    token usage against that same model."""
     system = (
         "You are a senior equity research analyst working one step of a larger "
         "research plan. Reason over the provided data to satisfy the step's "
@@ -148,7 +170,7 @@ def _reason(client, description: str, context: dict):
     ctx_json = json.dumps(context, default=str)[:_CONTEXT_CHARS] if context else "(no prior data)"
     user_msg = f"Step objective:\n{description}\n\nData from prior steps:\n{ctx_json}"
     resp = client.messages.create(
-        model=RESEARCH_REASON_MODEL,
+        model=model,
         max_tokens=700,
         system=system,
         messages=[{"role": "user", "content": user_msg}],
@@ -203,9 +225,10 @@ async def run_plan(
                "description": st.description, "depends_on": list(st.depends_on)}
         try:
             if tool == REASON_TOOL:
+                model = route_model(effective_kind(st), st.model_override)
                 context = {dep: outputs[dep] for dep in st.depends_on if dep in outputs}
-                data, reason_usage = _reason(client, st.description, context)
-                usage.add(RESEARCH_REASON_MODEL, reason_usage)
+                data, reason_usage = _reason(client, st.description, context, model)
+                usage.add(model, reason_usage)
             else:
                 data = _run_fetch(tool, tickers, ctxs)
         except Exception as e:  # per-subtask failure: report, don't abort
@@ -229,8 +252,9 @@ async def run_plan(
             f"Tickers: {', '.join(tickers) or '(none)'}\n\n"
             f"Findings:\n{json.dumps(outputs, default=str)[:_CONTEXT_CHARS * 2]}"
         )
+        synth_model = route_model(KIND_SYNTHESIS)  # the implicit final synthesis step
         with client.messages.stream(
-            model=RESEARCH_SYNTHESIS_MODEL,
+            model=synth_model,
             max_tokens=1200,
             system=system,
             messages=[{"role": "user", "content": user_msg}],
@@ -238,7 +262,7 @@ async def run_plan(
             for text in stream.text_stream:
                 full += text
                 yield {"type": "synthesis_token", "token": text}
-            usage.add(RESEARCH_SYNTHESIS_MODEL, getattr(stream.get_final_message(), "usage", None))
+            usage.add(synth_model, getattr(stream.get_final_message(), "usage", None))
     except Exception as e:
         yield {"type": "error", "error": f"synthesis failed: {e}"}
         return

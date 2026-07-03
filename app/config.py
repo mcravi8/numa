@@ -79,21 +79,43 @@ NUMA_AUTO_RESEARCH = os.getenv("NUMA_AUTO_RESEARCH", "1").strip().lower() not in
     "0", "false", "no", "off", "",
 )
 
-# --- Research cost estimate — list prices ($/token), display only --------
-# Powers the "usage" event's estimated USD. Config-overridable; these are list
-# prices, so the figure is an estimate, not a bill. (model -> (input, output).)
-RESEARCH_PRICING = {
-    "claude-sonnet-4-6": (3.0 / 1e6, 15.0 / 1e6),
-    "claude-haiku-4-5-20251001": (1.0 / 1e6, 5.0 / 1e6),
-    "claude-opus-4-8": (15.0 / 1e6, 75.0 / 1e6),
+# --- Research cost estimate — list prices ($ per MILLION tokens) ---------
+# Powers both the live "usage" event's USD and the pre-run /research/estimate
+# projection. Values are the spec figures in $/M tokens: (input, output); the
+# division by 1e6 happens at the point of use (usd = (in*p_in + out*p_out)/1e6).
+# These keys must also be what the router's model ids and MODEL_ALIASES resolve
+# to, so any routed/overridden model prices from this one table.
+RESEARCH_PRICE_PER_M = {
+    "claude-haiku-4-5-20251001": (1.00, 5.00),
+    "claude-sonnet-4-6": (3.00, 15.00),
+    "claude-opus-4-8": (15.00, 75.00),
 }
-_DEFAULT_PRICE = (3.0 / 1e6, 15.0 / 1e6)
+_DEFAULT_PRICE_PER_M = (3.00, 15.00)   # unknown model → priced as Sonnet
 
 
 def estimate_cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
-    """Estimated USD for a call, from the list-price table above."""
-    inp, out = RESEARCH_PRICING.get(model, _DEFAULT_PRICE)
-    return (input_tokens or 0) * inp + (output_tokens or 0) * out
+    """Estimated USD for a call, from the per-million list-price table above."""
+    inp, out = RESEARCH_PRICE_PER_M.get(model, _DEFAULT_PRICE_PER_M)
+    return ((input_tokens or 0) * inp + (output_tokens or 0) * out) / 1e6
+
+
+# --- Research routing — per-step model tiers -----------------------------
+# The router (app/research/router.py) maps a step's kind to a model: fetch → no
+# model (a data-module call, no LLM cost), reason → RESEARCH_REASON_MODEL,
+# synthesis → RESEARCH_SYNTHESIS_MODEL. A step may override the tier with a short
+# alias ("haiku"/"sonnet"/"opus"); these are the ids those aliases resolve to
+# (and they key RESEARCH_PRICE_PER_M, so an overridden step still prices right).
+MODEL_ALIASES = {
+    "haiku": "claude-haiku-4-5-20251001",
+    "sonnet": "claude-sonnet-4-6",
+    "opus": "claude-opus-4-8",
+}
+
+# Upper bound the cost estimator clamps a step's projected output tokens to
+# (app/research/cost_estimate.py). Matches the largest real max_tokens the
+# executor issues (the streaming synthesis call), so the projection is an
+# upper-ish bound rather than an under-count.
+RESEARCH_MAX_OUTPUT_TOKENS = int(os.getenv("RESEARCH_MAX_OUTPUT_TOKENS", "1200"))
 
 # --- Finnhub — one shared client, or None when no key is configured ------
 # (news and peers use this instead of rebuilding a client on every call).

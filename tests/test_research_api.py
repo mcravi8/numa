@@ -45,8 +45,12 @@ def test_plan_returns_valid_schema(patch_research, fake_anthropic, make_msg):
     body = r.json()
     assert "subtasks" in body and isinstance(body["subtasks"], list)
     assert [s["name"] for s in body["subtasks"]] == ["technicals", "reason"]
-    for st in body["subtasks"]:  # AO's verbatim subtask shape
-        assert set(st.keys()) == {"name", "description", "depends_on"}
+    for st in body["subtasks"]:  # AO's subtask shape + the routing/cost fields
+        assert set(st.keys()) == {"name", "description", "depends_on", "kind", "model_override"}
+    # kind is inferred from the tool the name resolves to.
+    assert body["subtasks"][0]["kind"] == "fetch"    # technicals → a data module
+    assert body["subtasks"][1]["kind"] == "reason"   # reason → an LLM step
+    assert all(st["model_override"] is None for st in body["subtasks"])
 
 
 def test_plan_degrades_on_bad_model_output(patch_research, fake_anthropic, make_msg):

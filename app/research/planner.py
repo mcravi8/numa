@@ -15,7 +15,13 @@ import json
 import re
 
 from app.config import ANTHROPIC_CLIENT, RESEARCH_PLANNER_MODEL, logger
-from app.research.executor import ALLOWED_TOOLS, FETCH_TOOLS, REASON_TOOL, resolve_tool
+from app.research.executor import (
+    ALLOWED_TOOLS,
+    FETCH_TOOLS,
+    REASON_TOOL,
+    effective_kind,
+    resolve_tool,
+)
 from app.research.schemas import Plan, Subtask
 
 # Cost guards (RESEARCH_PLAN.md): auto-mode plans ≤ 5 subtasks, skill plans ≤ 8.
@@ -46,7 +52,14 @@ def _clean_subtasks(subtasks, max_subtasks) -> list:
             continue
         deps = st.get("depends_on", [])
         deps = [str(d) for d in deps] if isinstance(deps, list) else []
-        cleaned.append(Subtask(name=name, description=str(st.get("description", "")), depends_on=deps))
+        # kind/model_override are lenient (coerced by the Subtask validators); then
+        # reconcile the kind with the tool the name resolves to, so a fetch tool is
+        # stored as kind "fetch" and a bad kind can't misroute a step.
+        sub = Subtask(name=name, description=str(st.get("description", "")),
+                      depends_on=deps, kind=st.get("kind"),
+                      model_override=st.get("model_override"))
+        sub.kind = effective_kind(sub)
+        cleaned.append(sub)
     return cleaned[:max_subtasks]
 
 
@@ -73,9 +86,11 @@ def _system_prompt() -> str:
         "(no data fetch of its own).\n\n"
         "Rules: names must be unique — to reuse a tool, suffix a number "
         "(reason, reason_2). \"depends_on\" lists the names of earlier subtasks "
-        "whose output this step needs (fetch tools usually have none). Prefer the "
-        "fewest subtasks that answer the objective; end with a \"reason\" step "
-        "that ties the findings together when the objective needs synthesis."
+        "whose output this step needs (fetch tools usually have none). A step may "
+        "optionally carry \"kind\": \"reason\" or \"synthesis\" (omit it and we "
+        "infer it from the tool). Prefer the fewest subtasks that answer the "
+        "objective; end with a \"reason\" step that ties the findings together "
+        "when the objective needs synthesis."
     )
 
 
