@@ -71,11 +71,22 @@ RESEARCH_REASON_MODEL = os.getenv("RESEARCH_REASON_MODEL", "claude-sonnet-4-6")
 RESEARCH_SYNTHESIS_MODEL = os.getenv("RESEARCH_SYNTHESIS_MODEL", "claude-sonnet-4-6")
 # The chat auto-research classifier is a cheap Haiku-class gate (a few tokens).
 RESEARCH_CLASSIFIER_MODEL = os.getenv("RESEARCH_CLASSIFIER_MODEL", "claude-haiku-4-5-20251001")
+# The clarifier gate (app/research/clarifier.py) is the same Haiku-class tier: a
+# single cheap call, hard-biased toward asking nothing.
+RESEARCH_CLARIFIER_MODEL = os.getenv("RESEARCH_CLARIFIER_MODEL", "claude-haiku-4-5-20251001")
 
 # --- Chat auto-research kill-switch --------------------------------------
 # When off, the /numa chat never deploys an auto-plan — every question is
 # answered directly. Set NUMA_AUTO_RESEARCH=0 to force direct-only.
 NUMA_AUTO_RESEARCH = os.getenv("NUMA_AUTO_RESEARCH", "1").strip().lower() not in (
+    "0", "false", "no", "off", "",
+)
+
+# --- Clarifier kill-switch -----------------------------------------------
+# When off, neither door (skills propose / chat auto-deploy) ever asks a
+# clarifying question — planning proceeds straight from the objective. Set
+# NUMA_CLARIFIER=0 to force silent (never-ask) behaviour.
+NUMA_CLARIFIER = os.getenv("NUMA_CLARIFIER", "1").strip().lower() not in (
     "0", "false", "no", "off", "",
 )
 

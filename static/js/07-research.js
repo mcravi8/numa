@@ -42,10 +42,12 @@ const RSK_BOLT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
    app/research/router + config.MODEL_ALIASES. -- */
 const RSK_MODELS = [{v:'',l:'Default'},{v:'haiku',l:'Haiku'},{v:'sonnet',l:'Sonnet'},{v:'opus',l:'Opus'}];
 
-// Section sub-view + transient run/edit state (one Skills section, four views).
+// Section sub-view + transient run/edit state (one Skills section, five views).
 // `estimate` caches the latest /research/estimate result so cost pills survive a
 // re-render until the next (debounced) re-estimate paints fresh numbers.
-let RESEARCH = {skills:null, loading:false, view:'list', editing:null, run:null, proposeText:'', estimate:null};
+// `clarify` holds a pending clarifier round-trip in the Skills door (view
+// 'clarify'): {questions, desc, tickers}.
+let RESEARCH = {skills:null, loading:false, view:'list', editing:null, run:null, proposeText:'', estimate:null, clarify:null};
 
 /* ---- small helpers ---- */
 function rskEsc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
@@ -167,6 +169,53 @@ function rskCostPanelHTML(){
     </div></div>`;
 }
 
+/* ============ CLARIFIER (shared by both doors) ============
+   The backend gate (app/research/clarifier.py) may return up to 3 questions
+   before planning. Both doors render the SAME UI: question text, suggestion
+   chips (click to fill), a free-text input, a per-question Skip, and one
+   Continue button. `ns` namespaces the field ids so the Skills-view form and a
+   chat bubble never collide. Answers (skipped/blank omitted) re-POST to propose
+   or /numa/research with clarified=true. */
+function rskClarifierHTML(questions, ns){
+  return (questions||[]).map((q,i)=>{
+    const chips=(q.suggestions||[]).map(s=>
+      `<button type="button" class="rsk-clar-chip" data-clar-ns="${rskAttr(ns)}" data-clar-q="${i}" data-clar-val="${rskAttr(s)}">${rskEsc(s)}</button>`).join('');
+    return `<div class="rsk-clar-q" data-clar-qi="${i}">
+      <div class="rsk-clar-text">${rskEsc(q.text)}</div>
+      ${chips?`<div class="rsk-clar-chips">${chips}</div>`:''}
+      <div class="rsk-clar-row">
+        <input class="rsk-input rsk-clar-input" data-clar-input="${rskAttr(ns)}-${i}" placeholder="Your answer… (optional)" value="${rskAttr(q.suggested_answer||'')}">
+        <label class="rsk-clar-skip"><input type="checkbox" data-clar-skip="${rskAttr(ns)}-${i}"> Skip</label>
+      </div></div>`;
+  }).join('');
+}
+// Collect answered questions from a rendered form. A skipped or blank question
+// is omitted → the backend treats it as unanswered (see clarifier.format_*).
+function rskCollectClarifications(questions, ns, root){
+  root=root||document;
+  const out=[];
+  (questions||[]).forEach((q,i)=>{
+    const sk=root.querySelector(`[data-clar-skip="${ns}-${i}"]`);
+    if(sk&&sk.checked) return;
+    const inp=root.querySelector(`[data-clar-input="${ns}-${i}"]`);
+    const ans=((inp&&inp.value)||'').trim();
+    if(!ans) return;
+    out.push({question:q.text, answer:ans});
+  });
+  return out;
+}
+// Chip click (delegated, works in both doors): fill that question's input and
+// clear its Skip. Selected chip gets a visual state within its question.
+document.addEventListener('click',e=>{
+  const chip=e.target.closest('.rsk-clar-chip'); if(!chip) return;
+  const ns=chip.getAttribute('data-clar-ns'), qi=chip.getAttribute('data-clar-q');
+  const inp=document.querySelector(`[data-clar-input="${ns}-${qi}"]`);
+  if(inp) inp.value=chip.getAttribute('data-clar-val');
+  const sk=document.querySelector(`[data-clar-skip="${ns}-${qi}"]`); if(sk) sk.checked=false;
+  const qEl=chip.closest('.rsk-clar-q');
+  if(qEl) qEl.querySelectorAll('.rsk-clar-chip').forEach(c=>c.classList.toggle('sel', c===chip));
+});
+
 /* ============ DATA LOAD ============ */
 async function loadSkills(){
   if(RESEARCH.loading) return;
@@ -193,6 +242,7 @@ SECTIONS.skills = function(){
   if(RESEARCH.skills===null){ loadSkills(); return rskSkeleton(); }
   if(RESEARCH.view==='edit')    return rskEditorHTML();
   if(RESEARCH.view==='propose') return rskProposeHTML();
+  if(RESEARCH.view==='clarify') return rskClarifyHTML();
   if(RESEARCH.view==='run')     return rskRunHTML();
   return rskListHTML();
 };
@@ -260,7 +310,7 @@ async function rskProposeGo(){
   RESEARCH.proposeText=desc;
   if(!desc){ toast('Describe the skill first'); return; }
   const st=document.getElementById('rskProposeStatus');
-  if(st) st.innerHTML=`<span class="rsk-spin-inline"></span> Numa is drafting the pipeline…`;
+  if(st) st.innerHTML=`<span class="rsk-spin-inline"></span> Numa is reviewing your request…`;
   try{
     const r=await fetch(`${API_BASE}/skills/propose`,{
       method:'POST', headers:{'Content-Type':'application/json'},
@@ -269,6 +319,14 @@ async function rskProposeGo(){
       body:JSON.stringify({description:desc, tickers:[rskCurrentTicker()]})});
     if(!r.ok) throw new Error('propose failed');
     const draft=await r.json();
+    // The clarifier may ask first (biased silent — usually it won't). Its
+    // response carries questions instead of a draft; render the clarify view.
+    if(draft.clarify && Array.isArray(draft.questions) && draft.questions.length){
+      RESEARCH.clarify={questions:draft.questions, desc, tickers:[rskCurrentTicker()]};
+      RESEARCH.view='clarify';
+      renderSection('skills');
+      return;
+    }
     // The backend returns a short Title-Case name; fall back to a word-boundary
     // trim of the description (never a hard mid-word slice).
     const name=(draft.name&&draft.name.trim())||rskTrimName(desc,40);
@@ -279,6 +337,39 @@ async function rskProposeGo(){
     renderSection('skills'); rskScheduleEstimate();
   }catch(e){
     if(st) st.innerHTML=`<span class="rsk-err">Couldn't reach the planner. You can still build the skill manually.</span>`;
+  }
+}
+
+/* ---- Clarify view (Skills door): render the gate's questions, then re-POST
+   propose with the answers (clarified=true) to get the draft. ---- */
+function rskClarifyHTML(){
+  const c=RESEARCH.clarify; if(!c) return rskProposeHTML();
+  return `${rskHead('A couple of quick questions','Numa can focus this skill with a little more detail. Answer what helps, skip the rest.',true)}
+    <div class="rsk-panel" id="rskClarifyPanel">
+      <div class="rsk-clar-list">${rskClarifierHTML(c.questions, 'sk')}</div>
+      <div class="rsk-actions rsk-actions-foot">
+        <button class="rsk-btn primary" data-rsk="clarify-go">Continue → draft plan</button>
+        <button class="rsk-btn ghost" data-rsk="cancel">Cancel</button>
+      </div>
+    </div>`;
+}
+async function rskClarifyContinue(){
+  const c=RESEARCH.clarify; if(!c) return;
+  const clar=rskCollectClarifications(c.questions, 'sk', document.getElementById('rskClarifyPanel'));
+  const btn=document.querySelector('[data-rsk="clarify-go"]');
+  if(btn){ btn.disabled=true; btn.textContent='Drafting…'; }
+  try{
+    const r=await fetch(`${API_BASE}/skills/propose`,{method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({description:c.desc, tickers:c.tickers, clarified:true, clarifications:clar})});
+    if(!r.ok) throw new Error('propose failed');
+    const draft=await r.json();
+    const name=(draft.name&&draft.name.trim())||rskTrimName(c.desc,40);
+    RESEARCH.editing=rskNormalizeSkill({id:null, name, description:draft.description||c.desc, version:1, plan:draft.plan});
+    RESEARCH.clarify=null; RESEARCH.view='edit';
+    renderSection('skills'); rskScheduleEstimate();
+  }catch(e){
+    if(btn){ btn.disabled=false; btn.textContent='Continue → draft plan'; }
+    toast('Could not draft the skill');
   }
 }
 function rskNormalizeSkill(s){
@@ -583,6 +674,7 @@ document.addEventListener('click',e=>{
   if(action==='new'){ RESEARCH.view='propose'; RESEARCH.proposeText=''; renderSection('skills'); return; }
   if(action==='blank'){ RESEARCH.editing=rskBlankSkill(); RESEARCH.view='edit'; renderSection('skills'); rskScheduleEstimate(); return; }
   if(action==='propose-go'){ rskProposeGo(); return; }
+  if(action==='clarify-go'){ rskClarifyContinue(); return; }
   if(action==='edit'){ rskEditSkill(id); return; }
   if(action==='delete'){
     if(el.dataset.armed==='1'){ rskDeleteSkill(id); return; }
@@ -591,7 +683,7 @@ document.addEventListener('click',e=>{
     return;
   }
   if(action==='save'){ rskSaveSkill(); return; }
-  if(action==='cancel'){ RESEARCH.view='list'; RESEARCH.editing=null; RESEARCH.run=null; RESEARCH.estimate=null; renderSection('skills'); return; }
+  if(action==='cancel'){ RESEARCH.view='list'; RESEARCH.editing=null; RESEARCH.run=null; RESEARCH.estimate=null; RESEARCH.clarify=null; renderSection('skills'); return; }
   if(action==='add-subtask'){ if(!ed)return; rskSyncEditorFromDOM(); const nm=rskUniqueName('reason', ed.plan.subtasks.map(s=>s.name)); ed.plan.subtasks.push({name:nm, description:'', depends_on:[], model_override:null}); renderSection('skills'); rskScheduleEstimate(); return; }
   if(action==='del-subtask'){ if(!ed)return; rskSyncEditorFromDOM(); ed.plan.subtasks.splice(i,1); if(!ed.plan.subtasks.length) ed.plan.subtasks.push(rskBlankSubtask()); renderSection('skills'); rskScheduleEstimate(); return; }
   if(action==='up'||action==='down'){
@@ -660,23 +752,82 @@ async function numaTryAutoResearch(question){
   const tickers=numaScopeTickers();
   if(!numaSignalsComplexity(question, tickers)) return false;   // simple → never leaves
   let decision;
-  try{
-    const mode=(typeof PREMIUM_MODE!=='undefined'&&PREMIUM_MODE)?'premium':'free';
-    const r=await fetch(`${API_BASE}/numa/research`,{method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({question, tickers, mode})});
-    if(!r.ok) return false;
-    decision=await r.json();
-  }catch(e){ return false; }
-  if(!decision || !decision.deploy || !decision.run_id) return false;
+  try{ decision=await numaResearchDecide(question, tickers, false, []); }
+  catch(e){ return false; }
+  if(!decision) return false;
+  // The clarifier (biased silent) may ask before deploying. Render its questions
+  // inline in the chat; Continue re-decides with clarified=true and streams.
+  if(decision.clarify && Array.isArray(decision.questions) && decision.questions.length){
+    numaRenderClarifierInChat(question, tickers, decision.questions);
+    return true;   // handled — the chat waits on the user's answers
+  }
+  if(!decision.deploy || !decision.run_id) return false;
   await numaRunResearchInChat(question, decision);
   return true;
 }
+// One /numa/research decision call (deploy? clarify? or the re-decide with answers).
+async function numaResearchDecide(question, tickers, clarified, clarifications){
+  const mode=(typeof PREMIUM_MODE!=='undefined'&&PREMIUM_MODE)?'premium':'free';
+  const r=await fetch(`${API_BASE}/numa/research`,{method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({question, tickers, mode, clarified:!!clarified, clarifications:clarifications||[]})});
+  if(!r.ok) return null;
+  return await r.json();
+}
 
-async function numaRunResearchInChat(question, decision){
+// Render the clarifier questions in a chat bubble (a user bubble + an AI bubble
+// holding the same clarifier UI the Skills door uses). Continue is wired below.
+function numaRenderClarifierInChat(question, tickers, questions){
   const userNode = addUser(question);
   if(typeof numaHistory!=='undefined') numaHistory.push({role:'user', content:question});
   const node = addAI('research');
   if(typeof pinLatest==='function') pinLatest(userNode);
+  const mtext = node.querySelector('.mtext');
+  const ns='numaclar';
+  mtext.innerHTML=`<div class="rsk-clar-wrap">
+    <div class="rsk-clar-head"><span class="rsk-clar-ic">${RSK_BOLT}</span>A couple of quick questions to focus the research — answer what helps, skip the rest.</div>
+    <div class="rsk-clar-list">${rskClarifierHTML(questions, ns)}</div>
+    <div class="rsk-clar-foot"><button class="rsk-btn primary" data-clar-go="chat">Continue</button></div>
+  </div>`;
+  const btn=mtext.querySelector('[data-clar-go="chat"]');
+  btn._question=question; btn._tickers=tickers; btn._questions=questions; btn._node=node; btn._ns=ns; btn._root=mtext;
+  if(typeof scrollThread==='function') scrollThread();
+}
+// Collapse the answered clarifier UI into a compact summary before the run.
+function numaCollapseClarifier(root, clar){
+  const wrap=root.querySelector('.rsk-clar-wrap'); if(!wrap) return;
+  const body=(clar&&clar.length)
+    ? clar.map(c=>`<div class="rsk-clar-sum"><b>${rskEsc(c.answer)}</b><span>${rskEsc(c.question)}</span></div>`).join('')
+    : `<div class="rsk-clar-sum muted">Proceeded without extra detail.</div>`;
+  wrap.innerHTML=`<div class="rsk-clar-collapsed">${body}</div>`;
+}
+// Chat clarifier Continue: collect answers, collapse the form, re-decide with
+// clarified=true, then stream the run into a fresh AI bubble (no duplicate user).
+document.addEventListener('click', async e=>{
+  const go=e.target.closest('[data-clar-go="chat"]'); if(!go) return;
+  if(go._busy) return; go._busy=true; go.disabled=true; go.textContent='Working…';
+  const clar=rskCollectClarifications(go._questions, go._ns, go._root);
+  numaCollapseClarifier(go._root, clar);
+  let decision=null;
+  try{ decision=await numaResearchDecide(go._question, go._tickers, true, clar); }catch(err){ decision=null; }
+  if(decision && decision.deploy && decision.run_id){
+    await numaRunResearchInChat(go._question, decision, {skipUser:true});
+  }else{
+    const mm=go._node&&go._node.querySelector('.mtext');
+    if(mm){ const p=document.createElement('div'); p.className='rsk-chat-memo'; p.style.display='';
+      p.innerHTML='<span class="rsk-err">Couldn\'t start the research run. Try asking again.</span>'; mm.appendChild(p); }
+  }
+});
+
+async function numaRunResearchInChat(question, decision, opts){
+  opts=opts||{};
+  // In the clarifier flow the user bubble + history already exist (from
+  // numaRenderClarifierInChat), so skip re-adding them and just add the run bubble.
+  if(!opts.skipUser){
+    const userNode = addUser(question);
+    if(typeof numaHistory!=='undefined') numaHistory.push({role:'user', content:question});
+    if(typeof pinLatest==='function') pinLatest(userNode);
+  }
+  const node = addAI('research');
   const mtext = node.querySelector('.mtext');
   const nSteps = ((decision.plan&&decision.plan.subtasks)||[]).length;
   mtext.innerHTML = `<div class="rsk-chat-run">

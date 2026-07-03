@@ -968,6 +968,30 @@ body.numa-open .numa-edge{transform:translateY(-50%) translateX(130%);opacity:0;
 .rsk-cost-row.total{margin-top:3px;padding-top:7px;border-top:1px solid var(--border-soft);font-size:13.5px;color:var(--text-2);}
 .rsk-cost-row.total .rsk-cost-v{color:var(--accent-2);font-weight:700;}
 
+/* clarifier gate — questions before planning (Skills view + inline in chat) */
+.rsk-clar-list{display:flex;flex-direction:column;gap:14px;}
+.rsk-clar-q{display:flex;flex-direction:column;gap:7px;}
+.rsk-clar-text{font-size:13.5px;font-weight:600;color:var(--text-1,var(--text-2));line-height:1.4;}
+.rsk-clar-chips{display:flex;flex-wrap:wrap;gap:6px;}
+.rsk-clar-chip{font-size:12px;font-weight:500;color:var(--text-2);background:var(--bg-subtle);border:1px solid var(--border);border-radius:999px;padding:4px 11px;cursor:pointer;transition:background .15s,color .15s,border-color .15s;}
+.rsk-clar-chip:hover{border-color:var(--accent-line);color:var(--accent-2);}
+.rsk-clar-chip.sel{background:var(--accent-soft);border-color:var(--accent-line);color:var(--accent-2);font-weight:600;}
+.rsk-clar-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.rsk-clar-input{flex:1;min-width:180px;padding:7px 10px;font-size:12.5px;}
+.rsk-clar-skip{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--text-4);cursor:pointer;flex:none;}
+.rsk-clar-skip input{accent-color:var(--accent);}
+/* chat-embedded clarifier bubble */
+.rsk-clar-wrap{display:flex;flex-direction:column;gap:12px;}
+.rsk-clar-head{display:flex;align-items:flex-start;gap:7px;font-size:12.5px;font-weight:600;color:var(--violet);line-height:1.4;}
+.rsk-clar-ic{flex:none;width:15px;height:15px;display:inline-grid;place-items:center;margin-top:1px;}
+.rsk-clar-ic svg{width:15px;height:15px;}
+.rsk-clar-foot{display:flex;gap:9px;}
+.rsk-clar-collapsed{display:flex;flex-direction:column;gap:5px;}
+.rsk-clar-sum{display:flex;gap:7px;align-items:baseline;font-size:12px;color:var(--text-3);}
+.rsk-clar-sum b{color:var(--text-1,var(--text-2));font-weight:600;}
+.rsk-clar-sum span{color:var(--text-4);font-size:11px;}
+.rsk-clar-sum.muted{color:var(--text-4);font-style:italic;}
+
 /* run: meta + progress rows (reuses .lc-spin / .lc-done from the analyze loader) */
 .rsk-run-meta{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:4px;}
 .rsk-chip{font-family:var(--font-mono);font-size:11px;font-weight:600;padding:4px 9px;border-radius:7px;background:var(--bg-subtle);border:1px solid var(--border);color:var(--text-2);}

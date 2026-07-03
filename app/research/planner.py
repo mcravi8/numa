@@ -94,13 +94,16 @@ def _system_prompt() -> str:
     )
 
 
-def build_plan(objective, tickers=None, *, max_subtasks=AUTO_MAX_SUBTASKS, client=None, usage=None) -> Plan:
+def build_plan(objective, tickers=None, *, max_subtasks=AUTO_MAX_SUBTASKS,
+               client=None, usage=None, clarifications="") -> Plan:
     """Plan ``objective`` over ``tickers`` (one Claude call). Degrades to a
     single-subtask plan on malformed output or zero subtasks; always enforces the
     ``max_subtasks`` cap. Never raises — planning failure is a degraded plan.
 
     ``usage`` is an optional UsageAccumulator; when given, this planner call's
-    tokens are folded in so a chat auto-run's cost covers planning too."""
+    tokens are folded in so a chat auto-run's cost covers planning too.
+    ``clarifications`` is the preformatted ``User clarifications:`` block (from
+    clarifier.format) appended to the prompt when the user answered any."""
     client = client or ANTHROPIC_CLIENT
     objective = (objective or "").strip()
     tickers = [t.upper().strip() for t in (tickers or []) if t and t.strip()]
@@ -114,6 +117,8 @@ def build_plan(objective, tickers=None, *, max_subtasks=AUTO_MAX_SUBTASKS, clien
         f"Allowed tools: {', '.join(ALLOWED_TOOLS)}\n"
         f"Return at most {max_subtasks} subtasks."
     )
+    if clarifications:
+        user_msg += f"\n\n{clarifications}"
     try:
         resp = client.messages.create(
             model=RESEARCH_PLANNER_MODEL,
@@ -258,15 +263,18 @@ def _has_fetch(plan) -> bool:
     return bool(plan) and any(resolve_tool(st.name) != REASON_TOOL for st in plan.subtasks)
 
 
-def _propose_once(client, canonical, max_subtasks, corrective=None):
+def _propose_once(client, canonical, max_subtasks, corrective=None, clarifications=""):
     """One planner call → ``(raw_name, Plan)``; ``(None, None)`` on parse failure.
-    ``canonical`` already has the user's symbols swapped for EXAMPLE_TICKER."""
+    ``canonical`` already has the user's symbols swapped for EXAMPLE_TICKER;
+    ``clarifications`` is the (already-canonicalized) User clarifications block."""
     user = (
         f"Plan a reusable research skill for the example ticker {EXAMPLE_TICKER}.\n"
         f"User request (about {EXAMPLE_TICKER}): {canonical or '(none stated)'}\n"
         f"Allowed tools: {', '.join(ALLOWED_TOOLS)}\n"
         f"Return at most {max_subtasks} subtasks."
     )
+    if clarifications:
+        user += f"\n\n{clarifications}"
     if corrective:
         user += f"\n\n{corrective}"
     try:
@@ -352,16 +360,22 @@ def _corrective_msg(residue) -> str:
     return msg
 
 
-def propose_plan(description, tickers=None, *, max_subtasks=SKILL_MAX_SUBTASKS, client=None):
+def propose_plan(description, tickers=None, *, max_subtasks=SKILL_MAX_SUBTASKS,
+                 client=None, clarifications=""):
     """Draft a reusable skill from a one-sentence description — see the section
     banner. Recognizing the referenced company (in any form) is the model's job;
     we inject one stand-in ticker, invert it back to {ticker} deterministically,
     then residue-check + retry-once + hard-scrub so the returned name and steps
-    carry zero company identity. Returns ``(name, Plan)``. Never raises."""
+    carry zero company identity. Returns ``(name, Plan)``. Never raises.
+
+    ``clarifications`` is the User clarifications block; it is canonicalized (the
+    user's symbols → EXAMPLE_TICKER) before it reaches the prompt, so the output
+    residue check still guards company identity even when an answer names one."""
     client = client or ANTHROPIC_CLIENT
     description = (description or "").strip()
     symbols = _example_symbols(description, tickers)
     canonical = _pre_scrub(description, symbols)  # secondary net only
+    clar_block = _pre_scrub(clarifications, symbols) if clarifications else ""
 
     name, plan, residue = "", None, []
     if client.api_key:
@@ -369,6 +383,7 @@ def propose_plan(description, tickers=None, *, max_subtasks=SKILL_MAX_SUBTASKS, 
             raw_name, raw_plan = _propose_once(
                 client, canonical, max_subtasks,
                 corrective=_corrective_msg(residue) if attempt else None,
+                clarifications=clar_block,
             )
             name = _invert(raw_name or "")   # (2) ACME → {ticker}, deterministic
             plan = _invert_plan(raw_plan)

@@ -83,6 +83,15 @@ class Plan(BaseModel):
     subtasks: List[Subtask] = Field(default_factory=list)
 
 
+class Clarification(BaseModel):
+    """One answered clarifier question, folded back into the planner/propose prompt
+    (see :mod:`app.research.clarifier`). Both doors send a list of these on the
+    second request; a skipped question is simply omitted (never sent)."""
+
+    question: str = ""
+    answer: str = ""
+
+
 class Skill(BaseModel):
     """A saved, editable pipeline (AO's Skill DTO minus DB fields).
 

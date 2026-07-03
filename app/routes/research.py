@@ -24,11 +24,12 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.research import clarifier
 from app.research.classifier import decide
 from app.research.cost_estimate import estimate_plan
 from app.research.executor import UsageAccumulator, run_plan
 from app.research.planner import AUTO_MAX_SUBTASKS, build_plan
-from app.research.schemas import Plan
+from app.research.schemas import Clarification, Plan
 
 router = APIRouter()
 
@@ -153,16 +154,32 @@ class ChatResearchRequest(BaseModel):
     question: str
     tickers: List[str] = Field(default_factory=list)
     mode: str = "free"
+    # Clarifier round-trip (same pattern as /skills/propose): the first POST
+    # leaves ``clarified`` false. If the deploy decision passes and the clarifier
+    # asks something, we return the questions (deploy still false) and the chat
+    # re-POSTs with ``clarified=true`` + answers to proceed to the run.
+    clarified: bool = False
+    clarifications: List[Clarification] = Field(default_factory=list)
 
 
 @router.post("/numa/research")
 def numa_research(req: ChatResearchRequest) -> dict:
-    verdict = decide(req.question, req.tickers)
-    if not verdict["deploy"]:
-        return {"deploy": False, "reason": verdict["reason"]}
+    # First pass: gate the question (deploy?) then the clarifier (ask?). The
+    # re-POST (clarified=true) skips both — the decision was already made — and
+    # goes straight to planning with the answers folded in.
+    if not req.clarified:
+        verdict = decide(req.question, req.tickers)
+        if not verdict["deploy"]:
+            return {"deploy": False, "reason": verdict["reason"]}
+        gate = clarifier.clarify(req.question, tickers=req.tickers, kind="research")
+        if gate["clarify"]:
+            return {"deploy": False, "clarify": True, "questions": gate["questions"],
+                    "reason": "clarify"}
 
+    clar_block = clarifier.format_clarifications(req.clarifications)
     usage = UsageAccumulator()  # seeded with the planner call, carried into the run
-    plan = build_plan(req.question, req.tickers, max_subtasks=AUTO_MAX_SUBTASKS, usage=usage)
+    plan = build_plan(req.question, req.tickers, max_subtasks=AUTO_MAX_SUBTASKS,
+                      usage=usage, clarifications=clar_block)
     run_id = uuid.uuid4().hex
     _RUNS[run_id] = {
         "plan": plan,
@@ -172,4 +189,4 @@ def numa_research(req: ChatResearchRequest) -> dict:
         "usage": usage,
     }
     return {"deploy": True, "run_id": run_id, "plan": plan.model_dump(),
-            "tickers": req.tickers, "reason": verdict["reason"]}
+            "tickers": req.tickers, "reason": "deploy"}

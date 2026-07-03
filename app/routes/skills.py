@@ -22,8 +22,9 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.config import SKILLS_FILE
+from app.research import clarifier
 from app.research.planner import SKILL_MAX_SUBTASKS, propose_plan
-from app.research.schemas import Plan, Skill
+from app.research.schemas import Clarification, Plan, Skill
 
 router = APIRouter()
 
@@ -62,6 +63,11 @@ class ProposeRequest(BaseModel):
     # Tickers the user is currently looking at — used only by the generalize
     # safety net below to scrub concrete symbols out of the reusable draft.
     tickers: List[str] = Field(default_factory=list)
+    # Clarifier round-trip: the first POST leaves ``clarified`` false, so the
+    # clarifier runs and may return questions instead of a draft. The frontend
+    # re-POSTs with ``clarified=true`` (+ any answers) to skip the gate and draft.
+    clarified: bool = False
+    clarifications: List[Clarification] = Field(default_factory=list)
 
 
 # ============================================================
@@ -116,16 +122,27 @@ def delete_skill(skill_id: str) -> dict:
 
 @router.post("/skills/propose")
 def propose_skill(req: ProposeRequest) -> dict:
-    """One planner pass over the skill's description → a DRAFT skill for the user
-    to edit and then save (POST /skills). id is None to mark it unsaved.
+    """Clarifier gate → one planner pass → a DRAFT skill for the user to edit and
+    save (POST /skills). id is None to mark it unsaved.
 
-    All the work lives in ``planner.propose_plan`` (invert-the-substitution): it
-    plans against a concrete example ticker, then swaps it back to ``{ticker}``,
-    returning a short Title-Case name and a reusable, ticker-agnostic plan. The
-    request's ``tickers`` are handed through so the caller's real symbols are
-    canonicalized/scrubbed too. Capped at 8 steps."""
+    On the first request (``clarified`` false) the clarifier runs; if it decides
+    the objective is materially ambiguous it returns ``{"clarify": true,
+    "questions": [...]}`` INSTEAD of a draft, and the frontend re-POSTs with the
+    answers and ``clarified=true``. The gate is biased silent + fail-open, so a
+    clear objective (or any clarifier failure) drafts immediately.
+
+    The draft itself is ``planner.propose_plan`` (invert-the-substitution): it
+    plans against a concrete example ticker, swaps it back to ``{ticker}``, and
+    returns a short Title-Case name + a reusable, ticker-agnostic plan. Any
+    answered clarifications fold into the propose prompt. Capped at 8 steps."""
     description = req.description.strip()
-    name, plan = propose_plan(description, tickers=req.tickers, max_subtasks=SKILL_MAX_SUBTASKS)
+    if not req.clarified:
+        gate = clarifier.clarify(description, tickers=req.tickers, kind="skill")
+        if gate["clarify"]:
+            return {"clarify": True, "questions": gate["questions"]}
+    clar_block = clarifier.format_clarifications(req.clarifications)
+    name, plan = propose_plan(description, tickers=req.tickers,
+                              max_subtasks=SKILL_MAX_SUBTASKS, clarifications=clar_block)
     draft = Skill(id=None, name=name or "New skill",
                   description=description, version=1, plan=plan)
     return draft.model_dump()
